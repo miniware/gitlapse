@@ -36,8 +36,8 @@ function showHelp() {
   `);
 }
 
-// Git safety functions - strictly read-only
-function safetyCheck(): void {
+// Check if we're in a git repo and the repo is in a safe state
+function safetyCheck(outDir = "timelapse"): void {
   log("Running git repository safety check");
   
   // Check if we're in a git repo
@@ -46,7 +46,11 @@ function safetyCheck(): void {
     process.exit(1);
   }
   
-  // Verify this isn't detached HEAD or in the middle of a rebase/merge
+  checkForDetachedHead();
+  checkForUncommittedChanges(outDir);
+}
+
+function checkForDetachedHead(): void {
   try {
     const gitStatus = execSync("git status").toString().trim();
     if (gitStatus.includes("detached HEAD") || 
@@ -60,19 +64,174 @@ function safetyCheck(): void {
     console.error("ERROR: Unable to check git status. Is this a valid git repository?");
     process.exit(1);
   }
-  
-  // Check for uncommitted changes
+}
+
+function checkForUncommittedChanges(outDir = "timelapse"): void {
   try {
+    // Get the status of the repository
     const status = execSync("git status --porcelain").toString().trim();
-    if (status) {
+    
+    // If there are no changes, we're good to go
+    if (!status) {
+      return;
+    }
+    
+    // Normalize outDir to handle both with and without trailing slash
+    const normalizedOutDir = outDir.endsWith('/') ? outDir : outDir + '/';
+    const outDirBasename = path.basename(outDir);
+    
+    // Check if the only changes are within the output directory
+    const lines = status.split("\n");
+    const nonOutputDirChanges = lines.filter(line => {
+      // Extract the file path from the status line (format: "XY path")
+      const filePath = line.substring(3);
+      // Check if the file is in the output directory - handle both relative and absolute paths
+      return !filePath.startsWith(normalizedOutDir) && 
+             !filePath.startsWith(outDirBasename + '/') &&
+             !filePath.endsWith(outDirBasename);
+    });
+    
+    // If there are changes outside of the output directory, exit
+    if (nonOutputDirChanges.length > 0) {
       console.error("ERROR: You have uncommitted changes in this repository.");
       console.error("Please commit or stash your changes before running this tool.");
       console.error("This tool temporarily checks out past commits and requires a clean working directory.");
       process.exit(1);
     }
+    
+    // If we get here, only output directory changes exist, which we'll ignore
+    log(`Ignoring changes in output directory (${outDir})`);
   } catch (error) {
     console.error("ERROR: Unable to check git status. Is this a valid git repository?");
     process.exit(1);
+  }
+}
+
+function detectPackageManager(serveCmd: string): string {
+  // Default to bun
+  let packageManager = 'bun';
+  
+  // Check for lockfiles to determine the package manager
+  if (fs.existsSync(path.join(process.cwd(), 'yarn.lock'))) {
+    packageManager = 'yarn';
+  } else if (fs.existsSync(path.join(process.cwd(), 'package-lock.json'))) {
+    packageManager = 'npm';
+  } else if (fs.existsSync(path.join(process.cwd(), 'pnpm-lock.yaml'))) {
+    packageManager = 'pnpm';
+  } else if (fs.existsSync(path.join(process.cwd(), 'bun.lock'))) {
+    packageManager = 'bun';
+  }
+  
+  // Also check the serve command to further confirm package manager
+  if (serveCmd.startsWith('npm ')) {
+    packageManager = 'npm';
+  } else if (serveCmd.startsWith('yarn ')) {
+    packageManager = 'yarn';
+  } else if (serveCmd.startsWith('pnpm ')) {
+    packageManager = 'pnpm';
+  }
+  
+  return packageManager;
+}
+
+async function installDependencies(packageManager: string): Promise<void> {
+  try {
+    // Install based on detected package manager
+    let installCmd = getInstallCommand(packageManager);
+    
+    log(`Running: ${installCmd}`);
+    execSync(installCmd, {
+      stdio: process.env.DEBUG ? 'inherit' : 'pipe',
+      timeout: 120000 // Give it up to 2 minutes for dependency installation
+    });
+    
+    pretty(`✅ Dependencies installed successfully`, "success");
+  } catch (installError) {
+    // Fall back to a more basic install if specific approach fails
+    const errorMsg = installError instanceof Error ? installError.message : String(installError);
+    pretty(`First install attempt failed: ${errorMsg}`, "warning");
+    pretty(`Trying again with bun...`, "warning");
+    
+    try {
+      execSync('bun install --no-save --exact', {
+        stdio: 'inherit',
+        timeout: 120000
+      });
+      pretty(`✅ Dependencies installed with fallback method`, "success");
+    } catch (fallbackError) {
+      const fallbackMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      pretty(`❌ Dependency installation failed: ${fallbackMsg}`, "error");
+      // Continue anyway - some commits might work without all deps
+    }
+  }
+}
+
+function getInstallCommand(packageManager: string): string {
+  switch (packageManager) {
+    case 'yarn':
+      return 'yarn install --frozen-lockfile';
+    case 'npm':
+      return 'npm ci';
+    case 'pnpm':
+      return 'pnpm install --frozen-lockfile';
+    case 'bun':
+    default:
+      return 'bun install --no-save --exact';
+  }
+}
+
+/**
+ * Check if package.json has changed and extract dependency changes
+ */
+async function checkPackageJsonChanges(prevPackageJson: string): Promise<{ packageJsonChanged: boolean; newPkgContent?: string }> {
+  try {
+    const pkgPath = path.join(process.cwd(), "package.json");
+    if (!fs.existsSync(pkgPath)) {
+      return { packageJsonChanged: false };
+    }
+    
+    const currentPackageJson = fs.readFileSync(pkgPath, "utf8");
+    
+    // If the files are identical, no change
+    if (currentPackageJson === prevPackageJson) {
+      log("package.json unchanged from previous commit");
+      return { packageJsonChanged: false };
+    }
+    
+    // Parse package.json to compare dependencies specifically
+    try {
+      const prevPkg = JSON.parse(prevPackageJson || "{}");
+      const currentPkg = JSON.parse(currentPackageJson);
+      
+      const prevDeps = {
+        ...(prevPkg.dependencies || {}),
+        ...(prevPkg.devDependencies || {})
+      };
+      
+      const currentDeps = {
+        ...(currentPkg.dependencies || {}),
+        ...(currentPkg.devDependencies || {})
+      };
+      
+      // Compare dependencies specifically
+      const depsChanged = JSON.stringify(prevDeps) !== JSON.stringify(currentDeps);
+      
+      if (depsChanged) {
+        log("package.json dependencies have changed since previous commit");
+        return { packageJsonChanged: true, newPkgContent: currentPackageJson };
+      } else {
+        log("package.json content changed but dependencies are the same");
+        return { packageJsonChanged: false, newPkgContent: currentPackageJson };
+      }
+    } catch (parseError) {
+      // If there's a parsing error, assume we need to reinstall
+      log(`Error parsing package.json: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+      return { packageJsonChanged: true, newPkgContent: currentPackageJson };
+    }
+  } catch (pkgError) {
+    const errorMsg = pkgError instanceof Error ? pkgError.message : String(pkgError);
+    pretty(`❌ Error checking dependencies: ${errorMsg}`, "error");
+    return { packageJsonChanged: false };
   }
 }
 
@@ -158,7 +317,7 @@ async function main() {
     log(`Config: outDir=${outDir}, width=${width}, height=${height}, waitMs=${waitMs}, route=${route}, port=${port}`);
 
     // Run safety checks
-    safetyCheck();
+    safetyCheck(outDir);
     log("Repository safety checks passed");
 
     // Only support apps with package.json
@@ -222,6 +381,30 @@ async function main() {
     
     // If startIndexResult is -1, all commits have already been processed
     if (startIndexResult === -1) {
+      // Check if there's already a video file in the output directory
+      const existingVideos = fs.readdirSync(outDir)
+        .filter(file => file.toLowerCase().endsWith('.mp4') && file.includes('timelapse'));
+      
+      if (existingVideos.length === 0) {
+        // No video exists yet, so generate one from the existing frames
+        pretty("No timelapse video found. Generating one from existing frames...", "info");
+        const outputVideoPath = await generateTimeLapseVideo(outDir, framesPattern, width, height, config.fps);
+        if (outputVideoPath) {
+          pretty(`✅ Done! Video saved at: ${outputVideoPath}`, "success");
+        }
+      } else {
+        // Video already exists
+        pretty(`Existing timelapse video(s) found: ${existingVideos.join(', ')}`, "info");
+        
+        // Ask if user wants to generate a new video anyway
+        const generateNewVideo = await getUserConfirmation("Generate a new video from existing frames?");
+        if (generateNewVideo) {
+          const outputVideoPath = await generateTimeLapseVideo(outDir, framesPattern, width, height, config.fps);
+          if (outputVideoPath) {
+            pretty(`✅ Done! New video saved at: ${outputVideoPath}`, "success");
+          }
+        }
+      }
       return;
     }
     
@@ -301,230 +484,243 @@ async function main() {
     await page.setViewport({ width, height });
     log(`Viewport set to ${width}x${height}`);
 
-    // Server management functions
-    async function startServer() {
-      log("Preparing to start server");
-      // Parse the serve command
-      const cmdParts = serveCmd.split(" ");
-      const cmd = cmdParts[0] || "bun";
-      const parts = cmdParts.slice(1);
+    // Parse and modify the server command
+function prepareServerCommand(serveCmd: string, port: number) {
+  log("Preparing server command");
+  const cmdParts = serveCmd.split(" ");
+  const cmd = cmdParts[0] || "bun";
+  const parts = cmdParts.slice(1);
+  
+  // Use the original command as a starting point
+  let modifiedCmd = cmd;
+  let modifiedParts = [...parts];
+  
+  // For dev servers, add port flag if not present
+  if (serveCmd.includes('dev') || serveCmd.includes('start') || serveCmd.includes('serve')) {
+    log("Detected dev server command");
+    
+    if (!serveCmd.includes('--port') && !serveCmd.includes('-p')) {
+      if (cmd === 'npm') {
+        // For npm, we need to pass args differently
+        modifiedParts.push('--');
+        modifiedParts.push(`--port=${port}`);
+      } else {
+        // For other package managers
+        modifiedParts.push(`--port=${port}`);
+      }
+      log(`Added explicit port ${port} to server command`);
+    }
+  }
+  
+  return { cmd: modifiedCmd, args: modifiedParts };
+}
+
+// Create a promise that rejects when the server exits unexpectedly
+function createEarlyExitDetector(server: any, errorDetailsGetter: () => string) {
+  return new Promise((_, reject) => {
+    server.on('exit', (code: number | null, signal: string | null) => {
+      if (code !== null || signal !== null) {
+        log(`Server exited early with ${code !== null ? `code ${code}` : `signal ${signal}`}`);
+        const error = errorDetailsGetter() || 
+          `Server exited unexpectedly with ${code !== null ? `code ${code}` : `signal ${signal}`}`;
+        reject(new Error(error));
+      }
+    });
+  });
+}
+
+// Create a promise that resolves when the server appears ready
+function createServerReadyDetector(server: any, waitMs: number, errorDetailsGetter: () => string) {
+  return new Promise<boolean>(resolve => {
+    let isReady = false;
+    
+    // Check stdout for ready indicators
+    const stdoutListener = (data: Buffer) => {
+      const output = data.toString();
+      // Look for common "ready" messages in server output
+      if (output.includes('ready') || 
+          output.includes('listening') || 
+          output.includes('started') || 
+          output.includes('running') ||
+          output.includes('localhost')) {
+        isReady = true;
+        resolve(true);
+      }
+    };
+    
+    if (server.stdout) {
+      server.stdout.on('data', stdoutListener);
+    }
+    
+    // Also set a timeout to resolve anyway if we don't see ready message
+    setTimeout(() => {
+      const errorDetails = errorDetailsGetter();
+      if (!isReady && !errorDetails) {
+        resolve(true);
+      } else if (!isReady && errorDetails) {
+        resolve(false);
+      }
+    }, waitMs);
+  });
+}
+
+// Process server output to detect errors
+function setupOutputHandlers(server: any) {
+  let serverOutputBuffer = "";
+  let serverErrorBuffer = "";
+  let errorDetails = "";
+  
+  // Configure error handling
+  server.on('error', (err: Error) => {
+    const errMsg = err?.message || String(err);
+    log(`Server process error: ${errMsg}`);
+    errorDetails = `Process error: ${errMsg}`;
+  });
+  
+  // Capture stdout
+  if (server.stdout) {
+    server.stdout.on('data', (data: Buffer) => {
+      const output = data.toString();
+      serverOutputBuffer += output;
       
-      // Modify the command to run without blocking if it's a dev server command
-      // We'll use the approach appropriate for each package manager
-      let modifiedCmd = cmd;
-      let modifiedParts = [...parts];
+      // Log output for debugging
+      output.split('\n').filter(Boolean).forEach((line: string) => {
+        log(`Server stdout: ${line.trim()}`);
+      });
       
-      // For dev servers that would typically block (most of them), we add --port flag
-      // and make sure they run in the background
-      if (serveCmd.includes('dev') || serveCmd.includes('start') || serveCmd.includes('serve')) {
-        log("Detected dev server command, modifying to prevent blocking");
-        
-        // Add port explicitly if it's not already specified
-        if (!serveCmd.includes('--port') && !serveCmd.includes('-p')) {
-          if (cmd === 'npm') {
-            // For npm, we need to pass args differently
-            modifiedParts.push('--');
-            modifiedParts.push(`--port=${port}`);
-          } else {
-            // For other package managers
-            modifiedParts.push(`--port=${port}`);
-          }
-          log(`Added explicit port ${port} to server command`);
-        }
+      // Look for error indicators
+      if ((output.includes('Error') || output.includes('error')) && 
+          !output.includes('compiled') && 
+          !output.includes('successfully')) {
+        errorDetails = output.split('\n')
+          .find((line: string) => line.includes('Error') || line.includes('error'))
+          ?.trim() || output.trim();
       }
       
-      log(`Spawning server process: ${modifiedCmd} ${modifiedParts.join(" ")}`);
+      // Look for dependency issues
+      if (output.includes('not found') || output.includes('missing')) {
+        const match = output.match(/['"]([^'"]+)['"] not found/) || 
+                     output.match(/missing ([^'"]+)/i);
+        if (match && match[1]) {
+          errorDetails = `Missing dependency: ${match[1]}`;
+        }
+      }
+    });
+  }
+  
+  // Capture stderr
+  if (server.stderr) {
+    server.stderr.on('data', (data: Buffer) => {
+      const output = data.toString();
+      serverErrorBuffer += output;
       
+      // Log error output for debugging
+      output.split('\n').filter(Boolean).forEach((line: string) => {
+        log(`Server stderr: ${line.trim()}`);
+      });
+      
+      // Capture error details
+      if (!errorDetails && (
+          output.includes('Error') || 
+          output.includes('error') || 
+          output.includes('not found')
+      )) {
+        errorDetails = output.trim().split('\n')[0] || '';
+      }
+    });
+  }
+  
+  return () => errorDetails;
+}
+
+// Server management functions
+async function startServer() {
+  log("Preparing to start server");
+  
+  // Parse the serve command
+  const { cmd, args } = prepareServerCommand(serveCmd, port);
+  log(`Spawning server process: ${cmd} ${args.join(" ")}`);
+  
+  try {
+    // Spawn the server process, detached so it runs in the background
+    const server = spawn(cmd, args, { 
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, FORCE_COLOR: 'true' },
+      detached: true
+    });
+    
+    if (!server || !server.pid) {
+      throw new Error("Failed to spawn server process - no process ID");
+    }
+    
+    // Setup output handlers and get a function to retrieve error details
+    const getErrorDetails = setupOutputHandlers(server);
+    
+    // Create promises for server status detection
+    const earlyExitPromise = createEarlyExitDetector(server, getErrorDetails);
+    const serverReadyPromise = createServerReadyDetector(server, waitMs, getErrorDetails);
+    
+    // Wait for server to start up or fail
+    log(`Waiting ${waitMs}ms for server to start`);
+    
+    // Wait for the server to be ready or fail early
+    const result = await Promise.race([serverReadyPromise, earlyExitPromise]);
+    
+    // serverReadyPromise returns true if ready, earlyExitPromise throws on error
+    if (result === false) {
+      throw new Error(getErrorDetails() || "Server startup failed silently");
+    }
+    
+    // Final error check
+    const errorDetails = getErrorDetails();
+    if (errorDetails) {
+      throw new Error(errorDetails);
+    }
+    
+    log("Server is ready");
+    return server;
+  } catch (serverError) {
+    const errorMsg = serverError instanceof Error ? serverError.message : String(serverError);
+    log(`Server start failed: ${errorMsg}`);
+    
+    // Ensure we have a meaningful error message
+    if (!errorMsg || errorMsg === "error when starting dev server:") {
+      throw new Error("Failed to start server - check dependencies and server configuration");
+    } else {
+      throw new Error(`${errorMsg}`);
+    }
+  }
+}
+
+async function stopServer(server: any) {
+  log("Stopping server");
+  if (!server || typeof server.kill !== 'function') {
+    log("Warning: Server object not valid or missing kill function");
+    return;
+  }
+  
+  try {
+    // Kill entire process group (for detached processes)
+    server.kill('SIGTERM'); 
+    
+    // Handle platform-specific cleanup
+    if (process.platform === 'win32') {
+      // Windows needs special handling for detached processes
+      execSync(`taskkill /pid ${server.pid} /t /f`, { stdio: 'ignore' });
+    } else {
       try {
-        // Collect server output
-        let serverOutputBuffer = "";
-        let serverErrorBuffer = "";
-        let errorDetails = "";
-        
-        // Spawn the server process, detached so it runs in the background
-        const server = spawn(modifiedCmd, modifiedParts, { 
-          stdio: ['ignore', 'pipe', 'pipe'],
-          env: { ...process.env, FORCE_COLOR: 'true' },
-          detached: true // Run in background
-        });
-        
-        if (!server || !server.pid) {
-          throw new Error("Failed to spawn server process - no process ID");
-        }
-        
-        // Configure error handling
-        server.on('error', (err) => {
-          const errMsg = err?.message || String(err);
-          log(`Server process error: ${errMsg}`);
-          errorDetails = `Process error: ${errMsg}`;
-        });
-        
-        // Capture stdout
-        if (server.stdout) {
-          server.stdout.on('data', (data) => {
-            const output = data.toString();
-            serverOutputBuffer += output;
-            
-            // Log output for debugging
-            output.split('\n').filter(Boolean).forEach((line: string) => {
-              log(`Server stdout: ${line.trim()}`);
-            });
-            
-            // Look for error indicators
-            if ((output.includes('Error') || output.includes('error')) && 
-                !output.includes('compiled') && 
-                !output.includes('successfully')) {
-              errorDetails = output.split('\n')
-                .find((line: string) => line.includes('Error') || line.includes('error'))
-                ?.trim() || output.trim();
-            }
-            
-            // Look for dependency issues
-            if (output.includes('not found') || output.includes('missing')) {
-              const match = output.match(/['"]([^'"]+)['"] not found/) || 
-                           output.match(/missing ([^'"]+)/i);
-              if (match && match[1]) {
-                errorDetails = `Missing dependency: ${match[1]}`;
-              }
-            }
-          });
-        }
-        
-        // Capture stderr
-        if (server.stderr) {
-          server.stderr.on('data', (data) => {
-            const output = data.toString();
-            serverErrorBuffer += output;
-            
-            // Log error output for debugging
-            output.split('\n').filter(Boolean).forEach((line: string) => {
-              log(`Server stderr: ${line.trim()}`);
-            });
-            
-            // Capture error details
-            if (!errorDetails && (
-                output.includes('Error') || 
-                output.includes('error') || 
-                output.includes('not found')
-            )) {
-              errorDetails = output.trim().split('\n')[0];
-            }
-          });
-        }
-        
-        // Listen for early exit
-        const earlyExitPromise = new Promise((_, reject) => {
-          server.on('exit', (code, signal) => {
-            if (code !== null || signal !== null) {
-              log(`Server exited early with ${code !== null ? `code ${code}` : `signal ${signal}`}`);
-              const error = errorDetails || 
-                `Server exited unexpectedly with ${code !== null ? `code ${code}` : `signal ${signal}`}`;
-              reject(new Error(error));
-            }
-          });
-        });
-        
-        // Wait for server to start up or fail
-        log(`Waiting ${waitMs}ms for server to start`);
-        
-        // For a working server, we want to see ready status in logs
-        const serverReadyPromise = new Promise<boolean>(resolve => {
-          let isReady = false;
-          
-          // Check stdout for ready indicators
-          const stdoutListener = (data: Buffer) => {
-            const output = data.toString();
-            // Look for common "ready" messages in server output
-            if (output.includes('ready') || 
-                output.includes('listening') || 
-                output.includes('started') || 
-                output.includes('running') ||
-                output.includes('localhost') ||
-                output.includes(`${port}`)) {
-              isReady = true;
-              resolve(true);
-            }
-          };
-          
-          if (server.stdout) {
-            server.stdout.on('data', stdoutListener);
-          }
-          
-          // Also set a timeout to resolve anyway if we don't see ready message
-          setTimeout(() => {
-            // If we haven't seen any errors and haven't detected ready state,
-            // assume it's ready after the timeout
-            if (!isReady && !errorDetails) {
-              resolve(true);
-            } else if (!isReady && errorDetails) {
-              resolve(false);
-            }
-          }, waitMs);
-        });
-        
-        // Wait for the server to be ready or fail early
-        try {
-          const result = await Promise.race([
-            serverReadyPromise,
-            earlyExitPromise
-          ]);
-          
-          // serverReadyPromise returns true if ready, earlyExitPromise throws on error
-          if (result === false) {
-            throw new Error(errorDetails || "Server startup failed silently");
-          }
-        } catch (error) {
-          throw error;
-        }
-        
-        // Final error check from collection
-        if (errorDetails) {
-          throw new Error(errorDetails);
-        }
-        
-        log("Server is ready");
-        return server;
-      } catch (serverError) {
-        const errorMsg = serverError instanceof Error ? serverError.message : String(serverError);
-        log(`Server start failed: ${errorMsg}`);
-        
-        // Ensure we have a meaningful error message
-        if (!errorMsg || errorMsg === "error when starting dev server:") {
-          throw new Error("Failed to start server - check dependencies and server configuration");
-        } else {
-          throw new Error(`${errorMsg}`);
-        }
+        // Try sending SIGKILL to make sure it's gone
+        process.kill(-server.pid, 'SIGKILL');
+      } catch (killError) {
+        // Ignore errors, as the process might already be gone
       }
     }
     
-    async function stopServer(server: any) {
-      log("Stopping server");
-      if (server && typeof server.kill === 'function') {
-        try {
-          // Kill entire process group (for detached processes)
-          server.kill('SIGTERM'); 
-          
-          // On some platforms/setups, we might need a more aggressive approach
-          if (process.platform === 'win32') {
-            // Windows needs special handling for detached processes
-            execSync(`taskkill /pid ${server.pid} /t /f`, { stdio: 'ignore' });
-          } else {
-            try {
-              // Try sending SIGKILL to make sure it's gone
-              process.kill(-server.pid, 'SIGKILL');
-            } catch (killError) {
-              // Ignore errors, as the process might already be gone
-            }
-          }
-          
-          log("Server process killed");
-        } catch (killError) {
-          log(`Error killing server: ${killError instanceof Error ? killError.message : String(killError)}`);
-        }
-      } else {
-        log("Warning: Server object not valid or missing kill function");
-      }
-    }
+    log("Server process killed");
+  } catch (killError) {
+    log(`Error killing server: ${killError instanceof Error ? killError.message : String(killError)}`);
+  }
+}
     
     try {
       // Iterate commits
@@ -545,76 +741,12 @@ async function main() {
           const pkgContent = fs.readFileSync(pkgPath, "utf8");
           prevPackageJson = pkgContent;
           
-          // Detect which package manager to use
-          let packageManager = 'bun'; // Default to bun
-          
-          // Check for lockfiles to determine the package manager
-          if (fs.existsSync(path.join(process.cwd(), 'yarn.lock'))) {
-            packageManager = 'yarn';
-          } else if (fs.existsSync(path.join(process.cwd(), 'package-lock.json'))) {
-            packageManager = 'npm';
-          } else if (fs.existsSync(path.join(process.cwd(), 'pnpm-lock.yaml'))) {
-            packageManager = 'pnpm';
-          } else if (fs.existsSync(path.join(process.cwd(), 'bun.lock'))) {
-            packageManager = 'bun';
-          }
-          
-          // Also check the serve command to further confirm package manager
-          if (serveCmd.startsWith('npm ')) {
-            packageManager = 'npm';
-          } else if (serveCmd.startsWith('yarn ')) {
-            packageManager = 'yarn';
-          } else if (serveCmd.startsWith('pnpm ')) {
-            packageManager = 'pnpm';
-          }
+          // Detect and install dependencies for this commit
+          const packageManager = detectPackageManager(serveCmd);
           
           // Install dependencies directly in the project
           pretty(`📦 Installing dependencies using ${packageManager}...`, "info");
-          
-          try {
-            // Install based on detected package manager
-            let installCmd = '';
-            switch (packageManager) {
-              case 'yarn':
-                installCmd = 'yarn install --frozen-lockfile';
-                break;
-              case 'npm':
-                installCmd = 'npm ci';
-                break;
-              case 'pnpm':
-                installCmd = 'pnpm install --frozen-lockfile';
-                break;
-              case 'bun':
-              default:
-                installCmd = 'bun install --no-save --exact';
-                break;
-            }
-            
-            log(`Running: ${installCmd}`);
-            execSync(installCmd, {
-              stdio: process.env.DEBUG ? 'inherit' : 'pipe',
-              timeout: 120000 // Give it up to 2 minutes for dependency installation
-            });
-            
-            pretty(`✅ Dependencies installed successfully`, "success");
-          } catch (installError) {
-            // Fall back to a more basic install if specific approach fails
-            const errorMsg = installError instanceof Error ? installError.message : String(installError);
-            pretty(`First install attempt failed: ${errorMsg}`, "warning");
-            pretty(`Trying again with bun...`, "warning");
-            
-            try {
-              execSync('bun install --no-save --exact', {
-                stdio: 'inherit',
-                timeout: 120000
-              });
-              pretty(`✅ Dependencies installed with fallback method`, "success");
-            } catch (fallbackError) {
-              const fallbackMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-              pretty(`❌ Dependency installation failed: ${fallbackMsg}`, "error");
-              // Continue anyway - some commits might work without all deps
-            }
-          }
+          await installDependencies(packageManager);
           
           log("Dependencies installed without modifying project files");
         } else {
@@ -662,110 +794,16 @@ async function main() {
           }
           
           // Check if package.json has changed from previous commit
-          let packageJsonChanged = false;
-          try {
-            const pkgPath = path.join(process.cwd(), "package.json");
-            if (fs.existsSync(pkgPath)) {
-              const currentPackageJson = fs.readFileSync(pkgPath, "utf8");
-              
-              // Parse package.json to compare dependencies specifically
-              let prevDeps = {}, currentDeps = {};
-              try {
-                prevDeps = JSON.parse(prevPackageJson || "{}").dependencies || {};
-                prevDeps = {...prevDeps, ...JSON.parse(prevPackageJson || "{}").devDependencies || {}};
-                
-                currentDeps = JSON.parse(currentPackageJson).dependencies || {};
-                currentDeps = {...currentDeps, ...JSON.parse(currentPackageJson).devDependencies || {}};
-              } catch (parseError) {
-                log(`Error parsing package.json: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
-              }
-              
-              // Compare dependencies specifically
-              const depsChanged = JSON.stringify(prevDeps) !== JSON.stringify(currentDeps);
-              
-              if (depsChanged || currentPackageJson !== prevPackageJson) {
-                log("package.json dependencies have changed since previous commit");
-                packageJsonChanged = true;
-                prevPackageJson = currentPackageJson;
-                
-                // Detect which package manager to use for this commit
-                let packageManager = 'bun'; // Default to bun
-                
-                // Check for lockfiles to determine the package manager
-                if (fs.existsSync(path.join(process.cwd(), 'yarn.lock'))) {
-                  packageManager = 'yarn';
-                } else if (fs.existsSync(path.join(process.cwd(), 'package-lock.json'))) {
-                  packageManager = 'npm';
-                } else if (fs.existsSync(path.join(process.cwd(), 'pnpm-lock.yaml'))) {
-                  packageManager = 'pnpm';
-                } else if (fs.existsSync(path.join(process.cwd(), 'bun.lock'))) {
-                  packageManager = 'bun';
-                }
-                
-                // Also check the serve command to further confirm package manager
-                if (serveCmd.startsWith('npm ')) {
-                  packageManager = 'npm';
-                } else if (serveCmd.startsWith('yarn ')) {
-                  packageManager = 'yarn';
-                } else if (serveCmd.startsWith('pnpm ')) {
-                  packageManager = 'pnpm';
-                }
-                
-                // Reinstall dependencies with more verbose output
-                pretty(`📦 Dependencies changed, reinstalling using ${packageManager}...`, "info");
-                
-                try {
-                  // Install based on detected package manager
-                  let installCmd = '';
-                  switch (packageManager) {
-                    case 'yarn':
-                      installCmd = 'yarn install --frozen-lockfile';
-                      break;
-                    case 'npm':
-                      installCmd = 'npm ci';
-                      break;
-                    case 'pnpm':
-                      installCmd = 'pnpm install --frozen-lockfile';
-                      break;
-                    case 'bun':
-                    default:
-                      installCmd = 'bun install --no-save --exact';
-                      break;
-                  }
-                  
-                  log(`Running: ${installCmd}`);
-                  execSync(installCmd, {
-                    stdio: process.env.DEBUG ? 'inherit' : 'pipe',
-                    timeout: 120000 // Give it up to 2 minutes for dependency installation
-                  });
-                  
-                  pretty(`✅ Dependencies reinstalled successfully`, "success");
-                } catch (installError) {
-                  // If specific install fails, try with bun as fallback
-                  const errorMsg = installError instanceof Error ? installError.message : String(installError);
-                  pretty(`First install attempt failed: ${errorMsg}`, "warning");
-                  pretty(`Trying again with bun...`, "warning");
-                  
-                  try {
-                    execSync('bun install --no-save --exact', {
-                      stdio: 'inherit',
-                      timeout: 120000
-                    });
-                    pretty(`✅ Dependencies reinstalled with fallback method`, "success");
-                  } catch (fallbackError) {
-                    const fallbackMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-                    pretty(`❌ Dependency installation failed: ${fallbackMsg}`, "error");
-                    // Continue anyway - some commits might work without all deps
-                  }
-                }
-              } else {
-                log("package.json unchanged from previous commit");
-              }
-            }
-          } catch (pkgError) {
-            const errorMsg = pkgError instanceof Error ? pkgError.message : String(pkgError);
-            pretty(`❌ Error checking or installing dependencies: ${errorMsg}`, "error");
-            // Continue anyway and let the server start fail if needed
+          const { packageJsonChanged, newPkgContent } = await checkPackageJsonChanges(prevPackageJson);
+          
+          // Update the reference for next comparison
+          if (packageJsonChanged && newPkgContent) {
+            prevPackageJson = newPkgContent;
+            
+            // Handle dependency installation if needed
+            const packageManager = detectPackageManager(serveCmd);
+            pretty(`📦 Dependencies changed, reinstalling using ${packageManager}...`, "info");
+            await installDependencies(packageManager);
           }
           
           // Server reuse logic - only restart if dependencies changed or no server is running
@@ -817,350 +855,37 @@ async function main() {
           // Capture screenshot
           log(`Preparing to take screenshot at route: ${route}`);
           try {
-            log(`Navigating to ${url}${route}`);
+            // Attempt to navigate to the page and check for errors
+            const response = await navigateWithRetry(page, url + route, waitMs);
             
-            // Add a more generous timeout for navigation and wait for full load
-            const navigationTimeout = waitMs * 3;
-            log(`Using navigation timeout of ${navigationTimeout}ms`);
-            
-            // We'll retry navigation once if it fails
-            let retryAttempted = false;
-            let response;
-            
-            try {
-              response = await page.goto(url + route, { 
-                waitUntil: "networkidle0", 
-                timeout: navigationTimeout
-              });
-            } catch (navErr) {
-              if (!retryAttempted) {
-                // First failure, try once more with a different wait strategy
-                retryAttempted = true;
-                log("Navigation failed, retrying with different wait strategy");
-                
-                try {
-                  // Try with a simpler wait strategy
-                  response = await page.goto(url + route, { 
-                    waitUntil: "domcontentloaded", 
-                    timeout: navigationTimeout
-                  });
-                  
-                  // If we've loaded the DOM but not all resources, wait a bit more
-                  await new Promise(resolve => setTimeout(resolve, 1000));
-                } catch (retryErr) {
-                  // Let the outer catch handle this
-                  throw retryErr;
-                }
-              } else {
-                // Already retried, propagate the error
-                throw navErr;
-              }
+            if (!response) {
+              // Navigation failed silently
+              skipCommitWithWarning(i, commits.length, sha, message, "Navigation failed silently");
+              continue;
             }
-            
-            log("Navigation complete");
             
             // Check for HTTP error status codes
-            if (response) {
-              const statusCode = response.status();
-              const statusText = response.statusText();
-              log(`Page loaded with status code: ${statusCode} (${statusText})`);
-              
-              if (statusCode >= 400) {
-                // Try to get more detailed error information
-                let errorDetails = "";
-                try {
-                  // Check for error details in the page content
-                  const errorContent = await page.evaluate(() => {
-                    // Look for common error containers (error pages often have these)
-                    const errorElements = [
-                      document.querySelector('.error-message, .error-text, .error-info'),
-                      document.querySelector('.error-details, .stack-trace'),
-                      document.querySelector('#error-container, .error-container'),
-                      document.querySelector('[role="alert"]'),
-                      document.querySelector('pre'), // Often contains stack traces or error details
-                      document.querySelector('h1, h2'), // Check headers for simple error messages
-                      document.body // Fallback to get text from body
-                    ];
-                    
-                    // Return the first non-empty error element text
-                    for (const el of errorElements) {
-                      if (el && el.textContent && el.textContent.trim()) {
-                        const text = el.textContent.trim();
-                        // If it's very long, get just the first line or two
-                        return text.length > 100 ? text.split('\n').slice(0, 2).join(' ') : text;
-                      }
-                    }
-                    
-                    // Try to extract common error patterns if no error element found
-                    const bodyText = document.body.textContent || '';
-                    
-                    // Look for dependency errors which are common in dev servers
-                    const missingDepMatch = bodyText.match(/dependency ["']([^"']+)["'] not found/i) ||
-                                           bodyText.match(/Cannot find module ["']([^"']+)["']/i) ||
-                                           bodyText.match(/Module not found: Error: Can't resolve ["']([^"']+)["']/i);
-                                   
-                    if (missingDepMatch && missingDepMatch[1]) {
-                      return `Missing dependency: ${missingDepMatch[1]}`;
-                    }
-                    
-                    // Look for syntax errors
-                    const syntaxErrorMatch = bodyText.match(/SyntaxError: ([^\n]+)/i);
-                    if (syntaxErrorMatch && syntaxErrorMatch[1]) {
-                      return `Syntax error: ${syntaxErrorMatch[1]}`;
-                    }
-                    
-                    return "";
-                  });
-                  
-                  if (errorContent) {
-                    errorDetails = ` - ${errorContent.substring(0, 150).replace(/\n/g, ' ')}`;
-                  }
-                } catch (evalError) {
-                  // Ignore errors from page.evaluate
-                }
-                
-                pretty(`⚠️ Commit ${i+1}/${commits.length}: ${sha.substring(0, 8)} - ${message}`, "warning");
-                
-                // Enhanced error message
-                if (errorDetails.includes('Missing dependency')) {
-                  pretty(`   No screenshot saved - Dependency error: ${errorDetails.replace(' - ', '')}`, "warning");
-                } else {
-                  pretty(`   No screenshot saved - HTTP ${statusCode} ${statusText}${errorDetails}`, "warning");
-                }
-                
-                // Skip to next commit
-                continue;
-              }
-            }
-            
-            // Also check for error content in the page (for client-side errors)
-            const pageTitle = await page.title();
-            const pageContent = await page.content();
-            
-            // We need to be more careful about error page detection
-            // Only check for definitive error patterns, not just any content that might include these words
-            const errorPatterns = [
-              '404 Not Found', '500 Internal Server Error', 'Error Page',
-              'Something went wrong', 'page not found', 'cannot display the webpage'
-            ];
-            
-            // Check for page content that explicitly indicates an error
-            let isDefiniteErrorPage = false;
-            
-            // First check if the page has error ELEMENTS that are visible (status codes, error containers, etc.)
-            try {
-              isDefiniteErrorPage = await page.evaluate(() => {
-                // Check for HTTP status code elements (common in error pages)
-                const statusElements = document.querySelectorAll('.status-code, .error-code, code');
-                // Convert NodeList to Array for safety
-                const statusArray = Array.from(statusElements);
-                for (const el of statusArray) {
-                  const text = el.textContent || '';
-                  if (text.match(/^[45]\d{2}$/) || text.includes('404') || text.includes('500')) {
-                    return true;
-                  }
-                }
-                
-                // Check for explicit error message containers
-                const errorContainers = document.querySelectorAll(
-                  '.error-message, .error-container, .alert-danger, .exception, ' +
-                  '[role="alert"], .error-title, .error-description'
-                );
-                // Convert NodeList to Array for safety
-                const errorArray = Array.from(errorContainers);
-                if (errorArray.length > 0) {
-                  return true;
-                }
-                
-                // Check if the TITLE of the page is explicitly an error
-                const title = document.title || '';
-                if (
-                  title.includes('404') || 
-                  title.includes('500') || 
-                  title.match(/not found/i) || 
-                  title.match(/server error/i) ||
-                  title.match(/^error\b/i)
-                ) {
-                  return true;
-                }
-                
-                // Check for a mostly empty page
-                const contentElements = document.body.querySelectorAll('div, p, h1, h2, h3, section, main');
-                // Convert NodeList to Array for safety
-                const contentArray = Array.from(contentElements);
-                // If the page is almost empty (just a few elements), it might be an error or loading state
-                if (contentArray.length < 3 && (document.body.textContent?.trim().length || 0) < 50) {
-                  return true;
-                }
-                
-                return false;
-              });
-            } catch (evalError) {
-              // If evaluation fails, assume it's not an error page
-              isDefiniteErrorPage = false;
-            }
-            
-            // Only if we have a definite error page OR a very specific pattern match
-            const hasExplicitErrorContent = errorPatterns.some(pattern => 
-              pageTitle.toLowerCase().includes(pattern.toLowerCase()) || 
-              pageContent.toLowerCase().includes(pattern.toLowerCase())
-            );
-            
-            if (isDefiniteErrorPage || hasExplicitErrorContent) {
-              // Only then try to extract a specific error message
-              let errorMessage = "";
-              try {
-                // Look for error messages in common locations
-                const extractedError = await page.evaluate(() => {
-                  // Common error message container selectors
-                  const errorSelectors = [
-                    '.error-message', '.alert-danger', '.error-details', 
-                    '#error-container', '[role="alert"]', '.exception-message',
-                    'title', // Often contains error info
-                    'h1', // Often contain error titles
-                    '.main-error', '.error-code', '.status-code'
-                  ];
-                  
-                  // Check each selector
-                  for (const selector of errorSelectors) {
-                    const el = document.querySelector(selector);
-                    if (el && el.textContent) {
-                      const content = el.textContent.trim();
-                      if (content) {
-                        return content;
-                      }
-                    }
-                  }
-                  
-                  // If no specific error container found, try to find text with error-related words
-                  const bodyText = document.body.textContent || "";
-                  if (bodyText.length < 100) {
-                    return bodyText.trim(); // If it's short, just return the whole thing
-                  }
-                  
-                  const errorRegex = /error:?\s+([^\n.]+)/i;
-                  const match = bodyText.match(errorRegex);
-                  if (match && match[1]) {
-                    return match[1].trim();
-                  }
-                  
-                  return "";
-                });
-                
-                if (extractedError) {
-                  // Limit length and clean up newlines
-                  errorMessage = extractedError.substring(0, 100).replace(/\n/g, ' ');
-                } else {
-                  // If no specific error is found, don't show an empty string - show a better message
-                  errorMessage = "Empty or error page detected";
-                }
-              } catch (evalError) {
-                errorMessage = "Error page (could not extract details)";
-              }
-              
-              pretty(`⚠️ Commit ${i+1}/${commits.length}: ${sha.substring(0, 8)} - ${message}`, "warning");
-              pretty(`   No screenshot saved - ${errorMessage}`, "warning");
+            if (!await isResponseSuccessful(page, response, i, commits.length, sha, message)) {
               continue;
             }
             
-            // Additional check for empty or blank pages that might not be explicit errors
-            try {
-              const isEmptyPage = await page.evaluate(() => {
-                const bodyText = document.body.textContent || "";
-                const trimmedText = bodyText.trim();
-                // Check if the page has almost no content
-                if (trimmedText.length < 10) {
-                  return true;
-                }
-                
-                // Check if the page only has very little visible content
-                // Convert NodeList to Array for safety
-                const allElements = Array.from(document.querySelectorAll('*'));
-                const visibleElements = allElements.filter(el => {
-                  const style = window.getComputedStyle(el);
-                  return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
-                });
-                
-                // If very few visible elements with content, might be empty/loading
-                return visibleElements.length < 5 && trimmedText.length < 30;
-              });
-              
-              if (isEmptyPage) {
-                pretty(`⚠️ Commit ${i+1}/${commits.length}: ${sha.substring(0, 8)} - ${message}`, "warning");
-                pretty(`   No screenshot saved - Empty or loading page`, "warning");
-                continue;
-              }
-            } catch (evalError) {
-              // Ignore errors from evaluation
+            // Check for client-side error pages
+            if (await isErrorPage(page)) {
+              const errorMessage = await extractErrorMessage(page);
+              skipCommitWithWarning(i, commits.length, sha, message, errorMessage);
+              continue;
             }
             
-            // Truncate commit message to first ~5 words for the filename
-            const commitWords = message.split(' ');
-            const truncatedMessage = commitWords.slice(0, 5).join('_').replace(/[^a-zA-Z0-9_-]/g, '');
-            const frame = `${framesPattern}${String(i).padStart(3, "0")}_${truncatedMessage}.png`;
-            log(`Saving screenshot to: ${frame}`);
-            await page.screenshot({ path: frame, fullPage: true });
-            
-            // Verify the screenshot was actually created
-            if (!fs.existsSync(frame)) {
-              pretty(`❌ Failed to create screenshot at ${frame}`, "error");
-              process.exit(1);
+            // Check for empty pages
+            if (await isEmptyPage(page)) {
+              skipCommitWithWarning(i, commits.length, sha, message, "Empty or loading page");
+              continue;
             }
             
-            // Success message for each screenshot
-            pretty(`✅ [${i+1}/${commits.length}] Screenshot saved`, "success");
+            // Save the screenshot
+            await saveScreenshot(page, i, commits.length, message, framesPattern);
           } catch (navError) {
-            // Report error but continue to next commit instead of exiting
-            const errorMessage = navError instanceof Error ? navError.message : String(navError);
-            
-            // Check if it's a connection error (likely server didn't start properly)
-            const isConnectionError = errorMessage.includes('ERR_CONNECTION') || 
-                                      errorMessage.includes('ECONNREFUSED') ||
-                                      errorMessage.includes('ETIMEDOUT');
-            
-            // Get just the first line of the error message (without stack trace)
-            const shortErrorMessage = errorMessage.split('\n')[0];
-            
-            // Check for ANY navigation-related errors, not just connection errors
-            const isNavigationError = isConnectionError || 
-                                    errorMessage.includes('ERR_ABORTED') || 
-                                    errorMessage.includes('ERR_FAILED') ||
-                                    errorMessage.includes('ERR_NETWORK') ||
-                                    errorMessage.includes('navigation');
-            
-            if (isNavigationError) {
-              // Try to get more specific error info
-              let issue = shortErrorMessage;
-              
-              // Extract specific error type if possible
-              if (errorMessage.includes('ECONNREFUSED')) {
-                issue = "Connection refused - server may not have started";
-              } else if (errorMessage.includes('ETIMEDOUT')) {
-                issue = "Connection timed out - server may be slow to respond";
-              } else if (errorMessage.includes('ERR_CONNECTION_RESET')) {
-                issue = "Connection reset - server closed the connection";
-              } else if (errorMessage.includes('ERR_EMPTY_RESPONSE')) {
-                issue = "Empty response - server didn't return any data";
-              } else if (errorMessage.includes('ERR_ABORTED')) {
-                issue = "Navigation aborted - page may be redirecting or reloading";
-              } else if (errorMessage.includes('ERR_FAILED')) {
-                issue = "Navigation failed - page may be unreachable";
-              }
-              
-              pretty(`⚠️ Commit ${i+1}/${commits.length}: ${sha.substring(0, 8)} - ${message}`, "warning");
-              pretty(`   No screenshot saved - ${issue}`, "warning");
-              
-              // Continue to next commit instead of exiting
-              continue;
-            } else {
-              // For other types of errors that aren't navigation related, print the error
-              // but DON'T exit - just continue to the next commit
-              pretty(`⚠️ Commit ${i+1}/${commits.length}: ${sha.substring(0, 8)} - ${message}`, "warning");
-              pretty(`   No screenshot saved - Unexpected error: ${shortErrorMessage}`, "warning");
-              
-              // Continue to next commit instead of exiting
-              continue;
-            }
+            handleNavigationError(navError, i, commits.length, sha, message);
           }
         }
       } finally {
@@ -1177,7 +902,12 @@ async function main() {
       await browser.close();
       log("Browser closed successfully");
       
-      // Return to original branch with multi-level fallbacks
+      // Return to original branch using helper functions
+      await restoreRepositoryState();
+    }
+    
+    // Function to restore repository state with fallbacks
+    async function restoreRepositoryState() {
       log(`Restoring repository state`);
       try {
         // First try to restore original branch if known
@@ -1192,146 +922,55 @@ async function main() {
           }
         }
         
-        // Fallback 1: Try to checkout HEAD
-        try {
-          execSync(`git checkout HEAD --quiet`);
-          log(`Restored repository to HEAD`);
-          return;
-        } catch (headError) {
-          // Ignore and try next fallback
-        }
+        // Try fallbacks in order
+        if (await tryCheckoutHead()) return;
+        if (await tryCheckoutMain()) return;
+        if (await tryCheckoutMaster()) return;
         
-        // Fallback 2: Try to checkout main branch
-        try {
-          execSync(`git checkout main --quiet`);
-          log(`Restored repository to main branch`);
-          return;
-        } catch (mainError) {
-          // Ignore and try next fallback
-        }
-        
-        // Fallback 3: Try to checkout master branch (for older repositories)
-        try {
-          execSync(`git checkout master --quiet`);
-          log(`Restored repository to master branch`);
-        } catch (masterError) {
-          pretty(`❌ ERROR: Failed all attempts to restore repository state`, "error");
-          pretty(`Please manually run: git checkout ${originalBranch || 'main'}`, "error");
-        }
+        // If all fallbacks fail
+        pretty(`❌ ERROR: Failed all attempts to restore repository state`, "error");
+        pretty(`Please manually run: git checkout ${originalBranch || 'main'}`, "error");
       } catch (error) {
         pretty(`❌ CRITICAL ERROR: Failed to restore repository state`, "error");
         pretty(`Please manually run: git checkout ${originalBranch || 'main'}`, "error");
       }
     }
-
-    // Build video - first check if we have frames
-    pretty("Creating timelapse video...", "info");
     
-    // Verify frames exist before attempting to create video
-    const frameGlob = `${framesPattern}*.png`;
-    const frameFiles = execSync(`ls ${frameGlob} 2>/dev/null || echo ""`).toString().trim().split("\n").filter(Boolean);
-    
-    if (frameFiles.length === 0) {
-      pretty("❌ No frames were created. Cannot generate video.", "error");
-      process.exit(1);
-    }
-    
-    pretty(`Found ${frameFiles.length} frames, generating video...`, "info");
-    
-    // Add timestamp to filename for unique name
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-    const videoPath = path.join(outDir, `timelapse-${timestamp}.mp4`);
-    
-    try {
-      // Need to use glob pattern instead of numbered pattern since we've added commit messages to filenames
-      // Create a file list for ffmpeg
-      const frameListPath = path.join(outDir, 'frames.txt');
-      
-      // Get all frames sorted by number (extract the number from each filename)
-      const sortedFrames = frameFiles.sort((a, b) => {
-        const numA = parseInt(a.match(/frame_(\d+)_/)?.[1] || '0');
-        const numB = parseInt(b.match(/frame_(\d+)_/)?.[1] || '0');
-        return numA - numB;
-      });
-      
-      // Write the frame list for ffmpeg
-      fs.writeFileSync(frameListPath, sortedFrames.map(f => `file '${f}'`).join('\n'));
-      
-      // Build FFmpeg command with file list - simple concatenation with no text overlay
-      const ffmpegCmd = `ffmpeg -y -framerate ${config.fps} -f concat -safe 0 -i "${frameListPath}" \
-        -s ${width}x${height} -c:v libx264 -pix_fmt yuv420p "${videoPath}"`;
-      
-      log(`Running FFmpeg command: ${ffmpegCmd}`);
-      execSync(ffmpegCmd);
-      
-      // Verify video was created
-      if (!fs.existsSync(videoPath)) {
-        pretty("❌ Failed to create video file.", "error");
-        process.exit(1);
+    async function tryCheckoutHead() {
+      try {
+        execSync(`git checkout HEAD --quiet`);
+        log(`Restored repository to HEAD`);
+        return true;
+      } catch (headError) {
+        return false;
       }
-      
-      pretty("✅ Video creation successful!", "success");
-    } catch (ffmpegError) {
-      pretty("❌ Error creating video:", "error");
-      pretty(ffmpegError instanceof Error ? ffmpegError.message : String(ffmpegError), "error");
-      process.exit(1);
     }
+    
+    async function tryCheckoutMain() {
+      try {
+        execSync(`git checkout main --quiet`);
+        log(`Restored repository to main branch`);
+        return true;
+      } catch (mainError) {
+        return false;
+      }
+    }
+    
+    async function tryCheckoutMaster() {
+      try {
+        execSync(`git checkout master --quiet`);
+        log(`Restored repository to master branch`);
+        return true;
+      } catch (masterError) {
+        return false;
+      }
+    }
+
+    // Build video from the captured frames
+    const outputVideoPath = await generateTimeLapseVideo(outDir, framesPattern, width, height, config.fps);
 
     // Restore original dependencies
-    pretty("Restoring original dependencies...", "info");
-    try {
-      // Detect which package manager to use for current branch
-      let packageManager = 'bun'; // Default to bun
-      
-      // Check for lockfiles to determine the package manager
-      if (fs.existsSync(path.join(process.cwd(), 'yarn.lock'))) {
-        packageManager = 'yarn';
-      } else if (fs.existsSync(path.join(process.cwd(), 'package-lock.json'))) {
-        packageManager = 'npm';
-      } else if (fs.existsSync(path.join(process.cwd(), 'pnpm-lock.yaml'))) {
-        packageManager = 'pnpm';
-      } else if (fs.existsSync(path.join(process.cwd(), 'bun.lock'))) {
-        packageManager = 'bun';
-      }
-      
-      // Run the correct install command
-      let installCmd = '';
-      switch (packageManager) {
-        case 'yarn':
-          installCmd = 'yarn install';
-          break;
-        case 'npm':
-          installCmd = 'npm install';
-          break;
-        case 'pnpm':
-          installCmd = 'pnpm install';
-          break;
-        case 'bun':
-        default:
-          installCmd = 'bun install';
-          break;
-      }
-      
-      log(`Reinstalling dependencies with: ${installCmd}`);
-      execSync(installCmd, { stdio: 'pipe' });
-      pretty("✅ Original dependencies restored", "success");
-    } catch (restoreError) {
-      const errorMsg = restoreError instanceof Error ? restoreError.message : String(restoreError);
-      pretty(`Warning: Could not restore original dependencies: ${errorMsg}`, "warning");
-      pretty("You may need to run 'npm install' or equivalent manually.", "warning");
-    }
-    
-    // Check for and delete any lock files that might have been created by bun
-    const lockFilePath = path.join(process.cwd(), 'bun.lock');
-    if (fs.existsSync(lockFilePath) && !fs.existsSync(path.join(process.cwd(), 'bun.lockb'))) {
-      // Only remove if it's not a regular bun project that uses bun.lock
-      try {
-        fs.unlinkSync(lockFilePath);
-        log("Removed generated bun.lock file");
-      } catch (err) {
-        log(`Warning: Could not remove lock file: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
+    await cleanupEnvironment();
     
     // Report the number of frames
     try {
@@ -1346,7 +985,7 @@ async function main() {
     }
     
     // Pretty completion message with ANSI colors
-    console.log('\x1b[32m%s\x1b[0m', `✅ Done! Video saved at: ${videoPath}`);
+    console.log('\x1b[32m%s\x1b[0m', `✅ Done! Video saved at: ${outputVideoPath}`);
     
     // Show cleanup instructions
     console.log('\n\x1b[36mTo clean up all generated files:\x1b[0m');
@@ -1378,6 +1017,500 @@ async function main() {
     }
     
     process.exit(1);
+  }
+}
+
+// Screenshot handling functions
+async function navigateWithRetry(page: any, url: string, waitMs: number) {
+  log(`Navigating to ${url}`);
+  const navigationTimeout = waitMs * 3;
+  log(`Using navigation timeout of ${navigationTimeout}ms`);
+  
+  let retryAttempted = false;
+  
+  try {
+    return await page.goto(url, { 
+      waitUntil: "networkidle0", 
+      timeout: navigationTimeout
+    });
+  } catch (navErr) {
+    if (retryAttempted) {
+      throw navErr;
+    }
+    
+    // First failure, try once more with a different wait strategy
+    retryAttempted = true;
+    log("Navigation failed, retrying with different wait strategy");
+    
+    const response = await page.goto(url, { 
+      waitUntil: "domcontentloaded", 
+      timeout: navigationTimeout
+    });
+    
+    // If we've loaded the DOM but not all resources, wait a bit more
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    return response;
+  }
+}
+
+async function isResponseSuccessful(page: any, response: any, commitIndex: number, totalCommits: number, sha: string, message: string) {
+  const statusCode = response.status();
+  const statusText = response.statusText();
+  log(`Page loaded with status code: ${statusCode} (${statusText})`);
+  
+  if (statusCode < 400) {
+    return true;
+  }
+  
+  // Try to get more detailed error information
+  let errorDetails = "";
+  try {
+    const errorContent = await extractHttpErrorDetails(page);
+    if (errorContent) {
+      errorDetails = ` - ${errorContent.substring(0, 150).replace(/\n/g, ' ')}`;
+    }
+  } catch (evalError) {
+    // Ignore errors from page.evaluate
+  }
+  
+  skipCommitWithWarning(commitIndex, totalCommits, sha, message, 
+    errorDetails.includes('Missing dependency') 
+      ? `Dependency error: ${errorDetails.replace(' - ', '')}`
+      : `HTTP ${statusCode} ${statusText}${errorDetails}`
+  );
+  
+  return false;
+}
+
+async function extractHttpErrorDetails(page: any) {
+  return await page.evaluate(() => {
+    // Look for common error containers
+    const errorElements = [
+      document.querySelector('.error-message, .error-text, .error-info'),
+      document.querySelector('.error-details, .stack-trace'),
+      document.querySelector('#error-container, .error-container'),
+      document.querySelector('[role="alert"]'),
+      document.querySelector('pre'),
+      document.querySelector('h1, h2'),
+      document.body
+    ];
+    
+    // Return the first non-empty error element text
+    for (const el of errorElements) {
+      if (el && el.textContent && el.textContent.trim()) {
+        const text = el.textContent.trim();
+        return text.length > 100 ? text.split('\n').slice(0, 2).join(' ') : text;
+      }
+    }
+    
+    // Try to extract common error patterns
+    const bodyText = document.body.textContent || '';
+    
+    // Look for dependency errors
+    const missingDepMatch = bodyText.match(/dependency ["']([^"']+)["'] not found/i) ||
+                           bodyText.match(/Cannot find module ["']([^"']+)["']/i) ||
+                           bodyText.match(/Module not found: Error: Can't resolve ["']([^"']+)["']/i);
+                   
+    if (missingDepMatch && missingDepMatch[1]) {
+      return `Missing dependency: ${missingDepMatch[1]}`;
+    }
+    
+    // Look for syntax errors
+    const syntaxErrorMatch = bodyText.match(/SyntaxError: ([^\n]+)/i);
+    if (syntaxErrorMatch && syntaxErrorMatch[1]) {
+      return `Syntax error: ${syntaxErrorMatch[1]}`;
+    }
+    
+    return "";
+  });
+}
+
+async function isErrorPage(page: any) {
+  const pageTitle = await page.title();
+  const pageContent = await page.content();
+  
+  // Definitive error patterns
+  const errorPatterns = [
+    '404 Not Found', '500 Internal Server Error', 'Error Page',
+    'Something went wrong', 'page not found', 'cannot display the webpage'
+  ];
+  
+  // Check for explicit error content
+  const hasExplicitErrorContent = errorPatterns.some(pattern => 
+    pageTitle.toLowerCase().includes(pattern.toLowerCase()) || 
+    pageContent.toLowerCase().includes(pattern.toLowerCase())
+  );
+  
+  // Check if the page has error elements
+  let isDefiniteErrorPage = false;
+  try {
+    isDefiniteErrorPage = await page.evaluate(() => {
+      // Check for HTTP status code elements
+      const statusElements = document.querySelectorAll('.status-code, .error-code, code');
+      for (const el of Array.from(statusElements)) {
+        const text = el.textContent || '';
+        if (text.match(/^[45]\d{2}$/) || text.includes('404') || text.includes('500')) {
+          return true;
+        }
+      }
+      
+      // Check for explicit error message containers
+      const errorContainers = document.querySelectorAll(
+        '.error-message, .error-container, .alert-danger, .exception, ' +
+        '[role="alert"], .error-title, .error-description'
+      );
+      if (Array.from(errorContainers).length > 0) {
+        return true;
+      }
+      
+      // Check title for error indicators
+      const title = document.title || '';
+      if (
+        title.includes('404') || 
+        title.includes('500') || 
+        title.match(/not found/i) || 
+        title.match(/server error/i) ||
+        title.match(/^error\b/i)
+      ) {
+        return true;
+      }
+      
+      // Check for a mostly empty page
+      const contentElements = document.body.querySelectorAll('div, p, h1, h2, h3, section, main');
+      if (Array.from(contentElements).length < 3 && (document.body.textContent?.trim().length || 0) < 50) {
+        return true;
+      }
+      
+      return false;
+    });
+  } catch (evalError) {
+    // If evaluation fails, assume it's not an error page
+    isDefiniteErrorPage = false;
+  }
+  
+  return isDefiniteErrorPage || hasExplicitErrorContent;
+}
+
+async function extractErrorMessage(page: any) {
+  try {
+    const extractedError = await page.evaluate(() => {
+      // Common error message container selectors
+      const errorSelectors = [
+        '.error-message', '.alert-danger', '.error-details', 
+        '#error-container', '[role="alert"]', '.exception-message',
+        'title', 'h1', '.main-error', '.error-code', '.status-code'
+      ];
+      
+      for (const selector of errorSelectors) {
+        const el = document.querySelector(selector);
+        if (el && el.textContent) {
+          const content = el.textContent.trim();
+          if (content) {
+            return content;
+          }
+        }
+      }
+      
+      // Try the body text
+      const bodyText = document.body.textContent || "";
+      if (bodyText.length < 100) {
+        return bodyText.trim();
+      }
+      
+      // Look for error messages
+      const errorRegex = /error:?\s+([^\n.]+)/i;
+      const match = bodyText.match(errorRegex);
+      if (match && match[1]) {
+        return match[1].trim();
+      }
+      
+      return "";
+    });
+    
+    if (extractedError) {
+      return extractedError.substring(0, 100).replace(/\n/g, ' ');
+    }
+    
+    return "Empty or error page detected";
+  } catch (evalError) {
+    return "Error page (could not extract details)";
+  }
+}
+
+async function isEmptyPage(page: any) {
+  try {
+    return await page.evaluate(() => {
+      const bodyText = document.body.textContent || "";
+      const trimmedText = bodyText.trim();
+      
+      // Check if the page has almost no content
+      if (trimmedText.length < 10) {
+        return true;
+      }
+      
+      // Check for visible elements
+      const allElements = Array.from(document.querySelectorAll('*'));
+      const visibleElements = allElements.filter(el => {
+        const style = window.getComputedStyle(el);
+        return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+      });
+      
+      // If very few visible elements with content, might be empty/loading
+      return visibleElements.length < 5 && trimmedText.length < 30;
+    });
+  } catch (evalError) {
+    // If evaluation fails, assume it's not empty
+    return false;
+  }
+}
+
+async function saveScreenshot(page: any, commitIndex: number, totalCommits: number, message: string, framesPattern: string | undefined) {
+  // Create filename from commit message
+  const commitWords = message.split(' ');
+  const truncatedMessage = commitWords.slice(0, 5).join('_').replace(/[^a-zA-Z0-9_-]/g, '');
+  const frame = `${framesPattern}${String(commitIndex).padStart(3, "0")}_${truncatedMessage}.png`;
+  
+  log(`Saving screenshot to: ${frame}`);
+  await page.screenshot({ path: frame, fullPage: true });
+  
+  // Verify the screenshot was created
+  if (!fs.existsSync(frame)) {
+    pretty(`❌ Failed to create screenshot at ${frame}`, "error");
+    process.exit(1);
+  }
+  
+  // Success message
+  pretty(`✅ [${commitIndex+1}/${totalCommits}] Screenshot saved`, "success");
+}
+
+function skipCommitWithWarning(commitIndex: number, totalCommits: number, sha: string, message: string | undefined, reason: string | undefined) {
+  const safeMessage = message || '(no message)';
+  const safeReason = reason || 'Unknown error';
+  pretty(`⚠️ Commit ${commitIndex+1}/${totalCommits}: ${sha.substring(0, 8)} - ${safeMessage}`, "warning");
+  pretty(`   No screenshot saved - ${safeReason}`, "warning");
+}
+
+function handleNavigationError(error: any, commitIndex: number, totalCommits: number, sha: string, message: string) {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const shortErrorMessage = errorMessage.split('\n')[0];
+  
+  // Identify connection errors
+  const isConnectionError = errorMessage.includes('ERR_CONNECTION') || 
+                           errorMessage.includes('ECONNREFUSED') ||
+                           errorMessage.includes('ETIMEDOUT');
+  
+  // Check for any navigation-related errors
+  const isNavigationError = isConnectionError || 
+                           errorMessage.includes('ERR_ABORTED') || 
+                           errorMessage.includes('ERR_FAILED') ||
+                           errorMessage.includes('ERR_NETWORK') ||
+                           errorMessage.includes('navigation');
+  
+  if (isNavigationError) {
+    // Extract specific error type
+    let issue = shortErrorMessage;
+    
+    if (errorMessage.includes('ECONNREFUSED')) {
+      issue = "Connection refused - server may not have started";
+    } else if (errorMessage.includes('ETIMEDOUT')) {
+      issue = "Connection timed out - server may be slow to respond";
+    } else if (errorMessage.includes('ERR_CONNECTION_RESET')) {
+      issue = "Connection reset - server closed the connection";
+    } else if (errorMessage.includes('ERR_EMPTY_RESPONSE')) {
+      issue = "Empty response - server didn't return any data";
+    } else if (errorMessage.includes('ERR_ABORTED')) {
+      issue = "Navigation aborted - page may be redirecting or reloading";
+    } else if (errorMessage.includes('ERR_FAILED')) {
+      issue = "Navigation failed - page may be unreachable";
+    }
+    
+    skipCommitWithWarning(commitIndex, totalCommits, sha, message, issue);
+  } else {
+    // For other errors
+    skipCommitWithWarning(commitIndex, totalCommits, sha, message, `Unexpected error: ${shortErrorMessage}`);
+  }
+}
+
+/**
+ * Generate a video from captured frames
+ */
+async function generateTimeLapseVideo(outDir: string, framesPattern: string | undefined, width: number, height: number, fps: number): Promise<string | undefined> {
+  if (!framesPattern) {
+    throw new Error("Frame pattern is required");
+  }
+  pretty("Creating timelapse video...", "info");
+  
+  // Find captured frames
+  const frameFiles = findCapturedFrames(outDir, framesPattern);
+  
+  if (frameFiles.length === 0) {
+    pretty("❌ No frames were created. Cannot generate video.", "error");
+    process.exit(1);
+  }
+  
+  // Special handling for single frame case
+  if (frameFiles.length === 1 && frameFiles[0]) {
+    log("Only one frame detected, will duplicate it to create a valid video");
+    // Duplicate the frame to ensure we can create a video (needs at least 2 frames)
+    frameFiles.push(frameFiles[0]);
+  }
+  
+  pretty(`Found ${frameFiles.length} frames, generating video...`, "info");
+  
+  // Create a unique filename with timestamp
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+  const outputVideoPath = path.join(outDir, `timelapse-${timestamp}.mp4`);
+  
+  try {
+    // Instead of using a concat file, we'll create a temp directory with numerically
+    // named files that FFmpeg can use with a pattern
+    const tmpDir = path.join(os.tmpdir(), `ffmpeg-frames-${Date.now()}`);
+    fs.mkdirSync(tmpDir, { recursive: true });
+    
+    try {
+      log(`Created temporary directory for frame sequence: ${tmpDir}`);
+      
+      // Copy all frames to the temporary directory with sequential names
+      const sortedFrames = frameFiles.sort((a, b) => {
+        const numA = parseInt(a.match(/frame_(\d+)_/)?.[1] || '0');
+        const numB = parseInt(b.match(/frame_(\d+)_/)?.[1] || '0');
+        return numA - numB;
+      });
+      
+      // Create symbolic links to the original files with sequential names
+      for (let i = 0; i < sortedFrames.length; i++) {
+        const sourcePath = sortedFrames[i];
+        if (!sourcePath) continue;
+        
+        const destPath = path.join(tmpDir, `img_${String(i).padStart(6, '0')}.png`);
+        fs.copyFileSync(sourcePath, destPath);
+        log(`Copied frame ${i+1}/${sortedFrames.length} to ${destPath}`);
+      }
+      
+      // Construct the ffmpeg command using the sequence pattern
+      const imgPattern = path.join(tmpDir, 'img_%06d.png');
+      const ffmpegCmd = `ffmpeg -y -i "${imgPattern}" -r ${fps} -s ${width}x${height} -c:v libx264 -pix_fmt yuv420p -movflags faststart "${outputVideoPath}"`;
+      
+      log(`Running direct FFmpeg command: ${ffmpegCmd}`);
+      execSync(ffmpegCmd);
+      
+      // Verify the video was created
+      if (!fs.existsSync(outputVideoPath)) {
+        throw new Error("Failed to create video file - output file does not exist");
+      }
+      
+      pretty("✅ Video creation successful!", "success");
+      return outputVideoPath;
+    } finally {
+      // Clean up the temporary directory
+      try {
+        log(`Cleaning up temporary directory: ${tmpDir}`);
+        // Use a simple find and rm command for better compatibility
+        execSync(`rm -rf "${tmpDir}"`);
+      } catch (cleanupError) {
+        log(`Warning: Failed to clean up temporary directory: ${cleanupError}`);
+      }
+    }
+  } catch (ffmpegError) {
+    pretty("❌ Error creating video:", "error");
+    pretty(ffmpegError instanceof Error ? ffmpegError.message : String(ffmpegError), "error");
+    
+    // Try one more fallback approach without any temp files
+    try {
+      log("Trying alternative approach with direct glob pattern...");
+      
+      const frameDir = path.dirname(frameFiles[0] || '');
+      const simpleCmd = `ffmpeg -y -pattern_type glob -i "${frameDir}/*.png" -r ${fps} -s ${width}x${height} -c:v libx264 -pix_fmt yuv420p "${outputVideoPath}"`;
+      
+      log(`Running fallback FFmpeg command: ${simpleCmd}`);
+      execSync(simpleCmd);
+      
+      if (fs.existsSync(outputVideoPath)) {
+        pretty("✅ Video creation successful with fallback method!", "success");
+        return outputVideoPath;
+      }
+    } catch (fallbackError) {
+      log(`Fallback approach failed: ${fallbackError}`);
+      pretty("All video creation attempts failed. Please try manually using ffmpeg.", "error");
+      process.exit(1);
+    }
+    
+    process.exit(1);
+  }
+}
+
+/**
+ * Find all captured frames in the output directory
+ */
+function findCapturedFrames(outDir: string, framesPattern: string | undefined): string[] {
+  if (!framesPattern) {
+    throw new Error("Frame pattern is required");
+  }
+  const frameGlob = `${framesPattern}*.png`;
+  return execSync(`ls ${frameGlob} 2>/dev/null || echo ""`)
+    .toString()
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+}
+
+// The video generation functionality has been completely rewritten
+// and integrated into the generateTimeLapseVideo function
+
+/**
+ * Clean up environment before exiting
+ */
+async function cleanupEnvironment() {
+  pretty("Restoring original dependencies...", "info");
+  
+  try {
+    // Detect package manager
+    const packageManager = detectPackageManager('');
+    const installCmd = getRegularInstallCommand(packageManager);
+    
+    log(`Reinstalling dependencies with: ${installCmd}`);
+    execSync(installCmd, { stdio: 'pipe' });
+    pretty("✅ Original dependencies restored", "success");
+  } catch (restoreError) {
+    const errorMsg = restoreError instanceof Error ? restoreError.message : String(restoreError);
+    pretty(`Warning: Could not restore original dependencies: ${errorMsg}`, "warning");
+    pretty("You may need to run 'npm install' or equivalent manually.", "warning");
+  }
+  
+  await cleanupTempFiles();
+}
+
+/**
+ * Get standard install command (not the --frozen-lockfile version)
+ */
+function getRegularInstallCommand(packageManager: string): string {
+  switch (packageManager) {
+    case 'yarn':
+      return 'yarn install';
+    case 'npm':
+      return 'npm install';
+    case 'pnpm':
+      return 'pnpm install';
+    case 'bun':
+    default:
+      return 'bun install';
+  }
+}
+
+/**
+ * Clean up any temporary files created during execution
+ */
+async function cleanupTempFiles() {
+  // Check for and delete any lock files that might have been created by bun
+  const lockFilePath = path.join(process.cwd(), 'bun.lock');
+  if (fs.existsSync(lockFilePath) && !fs.existsSync(path.join(process.cwd(), 'bun.lockb'))) {
+    // Only remove if it's not a regular bun project that uses bun.lock
+    try {
+      fs.unlinkSync(lockFilePath);
+      log("Removed generated bun.lock file");
+    } catch (err) {
+      log(`Warning: Could not remove lock file: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
 

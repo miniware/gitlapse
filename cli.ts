@@ -25,7 +25,7 @@ export function parseArgs(
   let port = 3000;
   let branch: string | undefined = undefined;
   let maxCommits: number | undefined = undefined;
-  let fps = 2;
+  let fps = 12;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -97,10 +97,10 @@ export function parseArgs(
           throw new Error(`Missing value for ${arg}`);
         }
         i++;
-        fps = parseInt(args[i] || "2", 10);
+        fps = parseInt(args[i] || "12", 10);
         break;
       // Help is handled in index.ts
-      default:
+      default:``
         throw new Error(`Unknown argument: ${arg}`);
     }
   }
