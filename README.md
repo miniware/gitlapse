@@ -49,6 +49,15 @@ bun start [options]
 4. Takes a screenshot of the specified route
 5. Compiles all screenshots into a timelapse video
 
+### Resume Feature
+
+If the process is interrupted, git-lapse can resume from where it left off:
+
+- When you run git-lapse and it finds existing frames in the output directory, 
+  you'll be prompted to resume from the last processed commit or start over
+- This is useful for long projects where the process might be interrupted, 
+  or when you encounter errors and need to fix them before continuing
+
 ## Requirements
 
 - [Bun](https://bun.sh) v1.0+

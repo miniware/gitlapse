@@ -24,9 +24,13 @@ function showHelp() {
     --wait <milliseconds>    Wait time after starting server (default: 3000)
     -r, --route <path>       Route to capture (default: /)
     -p, --port <number>      Port to use for the dev server (default: 3000)
-    --branch <name>          Only include commits from this branch (default: all)
+    --branch <name>             Only include commits from this branch (default: all)
     --max-commits <number>   Limit number of commits to process
     --fps <number>           Frames per second in output video (default: 2)
+
+  Features:
+    - Automatic resume: If existing frames are found in the output directory,
+      you'll be prompted to resume from where you left off or start over
   `);
 }
 
@@ -267,6 +271,77 @@ async function main() {
     if (config.maxCommits && config.maxCommits > 0 && commits.length > config.maxCommits) {
       log(`Limiting to ${config.maxCommits} commits as requested`);
       commits = commits.slice(0, config.maxCommits);
+    }
+    
+    // Check if we can resume from a previous run
+    let startIndex = 0;
+    try {
+      if (fs.existsSync(outDir)) {
+        // Look for existing frames in the output directory
+        const framePattern = `${framesPattern}*.png`;
+        const existingFrames = execSync(`ls ${framePattern} 2>/dev/null || echo ""`)
+          .toString()
+          .trim()
+          .split("\n")
+          .filter(Boolean);
+          
+        if (existingFrames.length > 0) {
+          // Sort the frames by number to get the last one
+          const sortedFrames = existingFrames.sort((a, b) => {
+            const numA = parseInt(a.match(/frame_(\d+)_/)?.[1] || '0');
+            const numB = parseInt(b.match(/frame_(\d+)_/)?.[1] || '0');
+            return numB - numA; // Reverse sort to get highest frame number first
+          });
+          
+          // Get the frame number of the last frame
+          const lastFrame = sortedFrames[0];
+          if (lastFrame) {
+            const lastFrameNumberMatch = lastFrame.match(/frame_(\d+)_/);
+            
+            if (lastFrameNumberMatch && lastFrameNumberMatch[1]) {
+              const lastFrameNumber = parseInt(lastFrameNumberMatch[1]);
+              // Get details of the last processed commit
+              const lastSha = commits[lastFrameNumber] || "";
+              let lastCommitInfo = "";
+              if (lastSha) {
+                try {
+                  const message = execSync(`git show -s --format=%s ${lastSha}`).toString().trim();
+                  lastCommitInfo = ` (${lastSha.substring(0, 8)}: ${message})`;
+                } catch (e) {
+                  // Ignore error getting commit info
+                }
+              }
+              
+              // Ask user if they want to resume or start over
+              pretty(`Found ${existingFrames.length} existing frames in ${outDir}`, "info");
+              pretty(`Last processed commit: #${lastFrameNumber + 1}${lastCommitInfo}`, "info");
+              
+              const resumeConfirm = await getUserConfirmation("Resume from last processed commit?");
+              
+              if (resumeConfirm) {
+                // Start from the next commit after the last processed one
+                startIndex = lastFrameNumber + 1;
+                
+                if (startIndex < commits.length) {
+                  pretty(`Resuming from commit ${startIndex + 1}/${commits.length}`, "success");
+                } else {
+                  pretty("All commits have already been processed. Nothing to do.", "info");
+                  return;
+                }
+              } else {
+                // User chose to start over
+                pretty("Starting from the beginning (existing frames will be overwritten)", "warning");
+                startIndex = 0;
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      // If there's any error checking for existing frames, just start from the beginning
+      log(`Error checking for existing frames: ${error instanceof Error ? error.message : String(error)}`);
+      log("Starting from the first commit");
+      startIndex = 0;
     }
 
     if (commits.length === 0) {
@@ -573,11 +648,14 @@ async function main() {
       
       // Initial checkout and setup
       if (commits.length > 0) {
-        const firstSha = commits[0];
-        if (firstSha) {
-          log(`Checking out first commit: ${firstSha.substring(0, 8)}`);
-          execSync(`git checkout ${firstSha} --quiet`);
-          log("First commit checked out successfully");
+        // If we're resuming, checkout the commit at the resume point
+        // Otherwise, checkout the first commit
+        const commitToCheckout = startIndex > 0 ? commits[startIndex] : commits[0];
+        
+        if (commitToCheckout) {
+          log(`Checking out initial commit: ${commitToCheckout.substring(0, 8)}`);
+          execSync(`git checkout ${commitToCheckout} --quiet`);
+          log("Initial commit checked out successfully");
           
           // Store original package.json content for comparison and restoration
           const pkgContent = fs.readFileSync(pkgPath, "utf8");
@@ -656,7 +734,7 @@ async function main() {
           
           log("Dependencies installed without modifying project files");
         } else {
-          log("Warning: First commit is undefined, skipping initial checkout");
+          log("Warning: Initial commit is undefined, skipping initial checkout");
         }
       }
       
@@ -664,9 +742,9 @@ async function main() {
       let server: any = null;
       
       try {
-        // Process each commit
+        // Process each commit, starting from the resume point if applicable
         
-        for (let i = 0; i < commits.length; i++) {
+        for (let i = startIndex; i < commits.length; i++) {
           const sha = commits[i];
           
           // Skip undefined or empty SHA values
@@ -691,8 +769,9 @@ async function main() {
           console.log('\x1b[35m[%d/%d]\x1b[33m %s\x1b[0m - \x1b[36m%s\x1b[0m', 
             i+1, commits.length, formattedDate, truncatedMessage);
           
-          // Only checkout if not the first commit (already checked out)
-          if (i > 0) {
+          // Skip checkout for the first iteration if we're starting from the beginning
+          // or if we've already checked out the correct commit during resumption
+          if (!(i === 0 && startIndex === 0) && !(i === startIndex && startIndex > 0)) {
             log(`Checking out commit: ${sha.substring(0, 8)}`);
             execSync(`git checkout ${sha} --quiet`);
             log("Checkout complete");
