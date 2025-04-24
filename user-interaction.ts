@@ -33,7 +33,7 @@ export async function getUserConfirmation(
     // Try to use gum for a pretty interface
     try {
       // This will throw with non-zero exit code if user selects "No"
-      deps.execCommand(`gum confirm "${prompt}"`, { stdio: 'inherit' });
+      deps.execCommand({ stdio: 'inherit' });
       return true;
     } catch (gumError) {
       // Non-zero exit means user chose "No"

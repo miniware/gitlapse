@@ -5,7 +5,7 @@ describe("findLastProcessedFrame", () => {
   test("returns -1 when output directory doesn't exist", () => {
     const mockDeps = {
       existsSync: () => false,
-      execCommand: () => Buffer.from("")
+      execCommand: () => ""
     };
     
     expect(findLastProcessedFrame("/test/dir/out", "/test/dir/out/frame_", mockDeps)).toBe(-1);
@@ -14,7 +14,7 @@ describe("findLastProcessedFrame", () => {
   test("returns -1 when no frames found", () => {
     const mockDeps = {
       existsSync: () => true,
-      execCommand: () => Buffer.from("")
+      execCommand: () => ""
     };
     
     expect(findLastProcessedFrame("/test/dir/out", "/test/dir/out/frame_", mockDeps)).toBe(-1);
@@ -23,7 +23,7 @@ describe("findLastProcessedFrame", () => {
   test("finds the highest frame number", () => {
     const mockDeps = {
       existsSync: () => true,
-      execCommand: () => Buffer.from("/test/dir/out/frame_001_commit.png\n/test/dir/out/frame_005_commit.png\n/test/dir/out/frame_003_commit.png")
+      execCommand: () => "frame_1_abc.png\nframe_5_def.png\nframe_3_ghi.png"
     };
     
     expect(findLastProcessedFrame("/test/dir/out", "/test/dir/out/frame_", mockDeps)).toBe(5);
@@ -32,7 +32,7 @@ describe("findLastProcessedFrame", () => {
   test("handles malformed frame names", () => {
     const mockDeps = {
       existsSync: () => true,
-      execCommand: () => Buffer.from("/test/dir/out/frame_001_commit.png\n/test/dir/out/invalid.png\n/test/dir/out/frame_003_commit.png")
+      execCommand: () => "frame_1_abc.png\nframe_xyz.png\nframe_3_def.png\ninvalid.png"
     };
     
     expect(findLastProcessedFrame("/test/dir/out", "/test/dir/out/frame_", mockDeps)).toBe(3);
@@ -41,7 +41,7 @@ describe("findLastProcessedFrame", () => {
   test("handles errors gracefully", () => {
     const mockDeps = {
       existsSync: () => true,
-      execCommand: () => { throw new Error("Command failed"); }
+      execCommand: () => { throw new Error("Test error"); }
     };
     
     expect(findLastProcessedFrame("/test/dir/out", "/test/dir/out/frame_", mockDeps)).toBe(-1);
@@ -59,7 +59,7 @@ describe("getLastCommitInfo", () => {
   test("returns commit info for valid index", () => {
     const commits = ["sha1", "sha2", "sha3"];
     const mockDeps = {
-      execCommand: () => Buffer.from("Test commit message")
+      execCommand: () => "Test commit message"
     };
     
     const result = getLastCommitInfo(1, commits, mockDeps);

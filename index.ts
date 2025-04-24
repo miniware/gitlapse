@@ -39,13 +39,13 @@ function showHelp() {
 // Check if we're in a git repo and the repo is in a safe state
 function safetyCheck(outDir = "timelapse"): void {
   log("Running git repository safety check");
-  
+
   // Check if we're in a git repo
   if (!fs.existsSync(path.join(process.cwd(), ".git"))) {
     console.error("ERROR: No .git directory found. Run from repo root.");
     process.exit(1);
   }
-  
+
   checkForDetachedHead();
   checkForUncommittedChanges(outDir);
 }
@@ -53,8 +53,8 @@ function safetyCheck(outDir = "timelapse"): void {
 function checkForDetachedHead(): void {
   try {
     const gitStatus = execSync("git status").toString().trim();
-    if (gitStatus.includes("detached HEAD") || 
-        gitStatus.includes("rebase in progress") || 
+    if (gitStatus.includes("detached HEAD") ||
+        gitStatus.includes("rebase in progress") ||
         gitStatus.includes("merge in progress")) {
       console.error("ERROR: Git repository is in a detached HEAD state or in the middle of a rebase/merge.");
       console.error("Please complete any ongoing git operations before running this tool.");
@@ -70,27 +70,27 @@ function checkForUncommittedChanges(outDir = "timelapse"): void {
   try {
     // Get the status of the repository
     const status = execSync("git status --porcelain").toString().trim();
-    
+
     // If there are no changes, we're good to go
     if (!status) {
       return;
     }
-    
+
     // Normalize outDir to handle both with and without trailing slash
     const normalizedOutDir = outDir.endsWith('/') ? outDir : outDir + '/';
     const outDirBasename = path.basename(outDir);
-    
+
     // Check if the only changes are within the output directory
     const lines = status.split("\n");
     const nonOutputDirChanges = lines.filter(line => {
       // Extract the file path from the status line (format: "XY path")
       const filePath = line.substring(3);
       // Check if the file is in the output directory - handle both relative and absolute paths
-      return !filePath.startsWith(normalizedOutDir) && 
+      return !filePath.startsWith(normalizedOutDir) &&
              !filePath.startsWith(outDirBasename + '/') &&
              !filePath.endsWith(outDirBasename);
     });
-    
+
     // If there are changes outside of the output directory, exit
     if (nonOutputDirChanges.length > 0) {
       console.error("ERROR: You have uncommitted changes in this repository.");
@@ -98,7 +98,7 @@ function checkForUncommittedChanges(outDir = "timelapse"): void {
       console.error("This tool temporarily checks out past commits and requires a clean working directory.");
       process.exit(1);
     }
-    
+
     // If we get here, only output directory changes exist, which we'll ignore
     log(`Ignoring changes in output directory (${outDir})`);
   } catch (error) {
@@ -110,7 +110,7 @@ function checkForUncommittedChanges(outDir = "timelapse"): void {
 function detectPackageManager(serveCmd: string): string {
   // Default to bun
   let packageManager = 'bun';
-  
+
   // Check for lockfiles to determine the package manager
   if (fs.existsSync(path.join(process.cwd(), 'yarn.lock'))) {
     packageManager = 'yarn';
@@ -121,7 +121,7 @@ function detectPackageManager(serveCmd: string): string {
   } else if (fs.existsSync(path.join(process.cwd(), 'bun.lock'))) {
     packageManager = 'bun';
   }
-  
+
   // Also check the serve command to further confirm package manager
   if (serveCmd.startsWith('npm ')) {
     packageManager = 'npm';
@@ -130,7 +130,7 @@ function detectPackageManager(serveCmd: string): string {
   } else if (serveCmd.startsWith('pnpm ')) {
     packageManager = 'pnpm';
   }
-  
+
   return packageManager;
 }
 
@@ -138,20 +138,20 @@ async function installDependencies(packageManager: string): Promise<void> {
   try {
     // Install based on detected package manager
     let installCmd = getInstallCommand(packageManager);
-    
+
     log(`Running: ${installCmd}`);
     execSync(installCmd, {
       stdio: process.env.DEBUG ? 'inherit' : 'pipe',
       timeout: 120000 // Give it up to 2 minutes for dependency installation
     });
-    
+
     pretty(`✅ Dependencies installed successfully`, "success");
   } catch (installError) {
     // Fall back to a more basic install if specific approach fails
     const errorMsg = installError instanceof Error ? installError.message : String(installError);
     pretty(`First install attempt failed: ${errorMsg}`, "warning");
     pretty(`Trying again with bun...`, "warning");
-    
+
     try {
       execSync('bun install --no-save --exact', {
         stdio: 'inherit',
@@ -189,33 +189,33 @@ async function checkPackageJsonChanges(prevPackageJson: string): Promise<{ packa
     if (!fs.existsSync(pkgPath)) {
       return { packageJsonChanged: false };
     }
-    
+
     const currentPackageJson = fs.readFileSync(pkgPath, "utf8");
-    
+
     // If the files are identical, no change
     if (currentPackageJson === prevPackageJson) {
       log("package.json unchanged from previous commit");
       return { packageJsonChanged: false };
     }
-    
+
     // Parse package.json to compare dependencies specifically
     try {
       const prevPkg = JSON.parse(prevPackageJson || "{}");
       const currentPkg = JSON.parse(currentPackageJson);
-      
+
       const prevDeps = {
         ...(prevPkg.dependencies || {}),
         ...(prevPkg.devDependencies || {})
       };
-      
+
       const currentDeps = {
         ...(currentPkg.dependencies || {}),
         ...(currentPkg.devDependencies || {})
       };
-      
+
       // Compare dependencies specifically
       const depsChanged = JSON.stringify(prevDeps) !== JSON.stringify(currentDeps);
-      
+
       if (depsChanged) {
         log("package.json dependencies have changed since previous commit");
         return { packageJsonChanged: true, newPkgContent: currentPackageJson };
@@ -244,7 +244,7 @@ function setupSafetyExitHandler() {
   ["SIGINT", "SIGTERM", "SIGHUP", "uncaughtException"].forEach(signal => {
     process.on(signal, () => {
       log("⚠️ Process interrupted, restoring repository state");
-      
+
       try {
         // First try to restore original branch if known
         if (originalBranch) {
@@ -259,7 +259,7 @@ function setupSafetyExitHandler() {
             // Will try fallbacks below
           }
         }
-        
+
         // Fallback 1: Try to checkout HEAD
         try {
           execSync(`git checkout HEAD --quiet`);
@@ -269,7 +269,7 @@ function setupSafetyExitHandler() {
         } catch (headError) {
           // Ignore and try next fallback
         }
-        
+
         // Fallback 2: Try to checkout main branch
         try {
           execSync(`git checkout main --quiet`);
@@ -279,7 +279,7 @@ function setupSafetyExitHandler() {
         } catch (mainError) {
           // Ignore and try next fallback
         }
-        
+
         // Fallback 3: Try to checkout master branch
         try {
           execSync(`git checkout master --quiet`);
@@ -290,7 +290,7 @@ function setupSafetyExitHandler() {
       } catch (finalError) {
         console.error(`CRITICAL ERROR during cleanup: ${finalError}`);
       }
-      
+
       process.exit(1);
     });
   });
@@ -298,17 +298,17 @@ function setupSafetyExitHandler() {
 
 async function main() {
   setupSafetyExitHandler();
-  
+
   try {
     log("Starting git-lapse");
-    
+
     // Show help if requested
     if (process.argv.includes('--help') || process.argv.includes('-h')) {
       log("Showing help and exiting");
       showHelp();
       return;
     }
-    
+
     // CLI args
     log("Parsing command line arguments");
     const args = process.argv.slice(2);
@@ -357,7 +357,7 @@ async function main() {
       log(`Using branch restriction: ${config.branch}`);
     }
     log(`Running git command: ${commitCmd}`);
-    
+
     let commits = execSync(commitCmd)
       .toString()
       .trim()
@@ -371,20 +371,20 @@ async function main() {
       log(`Limiting to ${config.maxCommits} commits as requested`);
       commits = commits.slice(0, config.maxCommits);
     }
-    
+
     // Check if we can resume from a previous run
     const startIndexResult = await checkResumeAndPrompt({
       outDir,
       framesPattern,
       commits
     });
-    
+
     // If startIndexResult is -1, all commits have already been processed
     if (startIndexResult === -1) {
       // Check if there's already a video file in the output directory
       const existingVideos = fs.readdirSync(outDir)
         .filter(file => file.toLowerCase().endsWith('.mp4') && file.includes('timelapse'));
-      
+
       if (existingVideos.length === 0) {
         // No video exists yet, so generate one from the existing frames
         pretty("No timelapse video found. Generating one from existing frames...", "info");
@@ -395,7 +395,7 @@ async function main() {
       } else {
         // Video already exists
         pretty(`Existing timelapse video(s) found: ${existingVideos.join(', ')}`, "info");
-        
+
         // Ask if user wants to generate a new video anyway
         const generateNewVideo = await getUserConfirmation("Generate a new video from existing frames?");
         if (generateNewVideo) {
@@ -407,7 +407,7 @@ async function main() {
       }
       return;
     }
-    
+
     // Otherwise, use the returned start index
     const startIndex = startIndexResult;
 
@@ -416,7 +416,7 @@ async function main() {
       process.exit(1);
     }
     log(`Will process ${commits.length} commits`);
-    
+
     // Log first few commits to aid debugging
     log("First few commits to process:");
     commits.slice(0, Math.min(5, commits.length)).forEach((sha, i) => {
@@ -424,33 +424,33 @@ async function main() {
       const message = execSync(`git show -s --format=%s ${sha}`).toString().trim();
       log(`  ${i+1}. ${shortSha} - ${message}`);
     });
-    
+
     // Show commit count and confirm with gum
     log("Prompting for user confirmation");
-    
+
     // Use gum for nice formatting
     pretty(`Found ${commits.length} commits to process.`, 'info');
-    
+
     // Create variable to track previous package.json for dependency change detection
     let prevPackageJson = "";
-    
+
     // User confirmation for large commit counts
     if (commits.length > 10) {
       log(`Asking confirmation for processing ${commits.length} commits`);
-      
+
       // Use gum format for the warning
       pretty(`Processing ${commits.length} commits may take a while.`, 'warning');
-      
+
       try {
         // Use gum confirm for interactive input (restoring the pretty interface)
         const confirm = await getUserConfirmation(`${commits.length} commits found. Continue?`);
         log(`User confirmation result: ${confirm}`);
-        
+
         if (!confirm) {
           pretty("Operation cancelled by user.", 'error');
           return;
         }
-        
+
         // Add a separator line after confirmation
         console.log('');
       } catch (confirmError) {
@@ -471,7 +471,7 @@ async function main() {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
-    
+
     // We'll install directly in the project
 
     // Launch browser
@@ -490,15 +490,15 @@ function prepareServerCommand(serveCmd: string, port: number) {
   const cmdParts = serveCmd.split(" ");
   const cmd = cmdParts[0] || "bun";
   const parts = cmdParts.slice(1);
-  
+
   // Use the original command as a starting point
   let modifiedCmd = cmd;
   let modifiedParts = [...parts];
-  
+
   // For dev servers, add port flag if not present
   if (serveCmd.includes('dev') || serveCmd.includes('start') || serveCmd.includes('serve')) {
     log("Detected dev server command");
-    
+
     if (!serveCmd.includes('--port') && !serveCmd.includes('-p')) {
       if (cmd === 'npm') {
         // For npm, we need to pass args differently
@@ -511,7 +511,7 @@ function prepareServerCommand(serveCmd: string, port: number) {
       log(`Added explicit port ${port} to server command`);
     }
   }
-  
+
   return { cmd: modifiedCmd, args: modifiedParts };
 }
 
@@ -521,7 +521,7 @@ function createEarlyExitDetector(server: any, errorDetailsGetter: () => string) 
     server.on('exit', (code: number | null, signal: string | null) => {
       if (code !== null || signal !== null) {
         log(`Server exited early with ${code !== null ? `code ${code}` : `signal ${signal}`}`);
-        const error = errorDetailsGetter() || 
+        const error = errorDetailsGetter() ||
           `Server exited unexpectedly with ${code !== null ? `code ${code}` : `signal ${signal}`}`;
         reject(new Error(error));
       }
@@ -533,25 +533,25 @@ function createEarlyExitDetector(server: any, errorDetailsGetter: () => string) 
 function createServerReadyDetector(server: any, waitMs: number, errorDetailsGetter: () => string) {
   return new Promise<boolean>(resolve => {
     let isReady = false;
-    
+
     // Check stdout for ready indicators
     const stdoutListener = (data: Buffer) => {
       const output = data.toString();
       // Look for common "ready" messages in server output
-      if (output.includes('ready') || 
-          output.includes('listening') || 
-          output.includes('started') || 
+      if (output.includes('ready') ||
+          output.includes('listening') ||
+          output.includes('started') ||
           output.includes('running') ||
           output.includes('localhost')) {
         isReady = true;
         resolve(true);
       }
     };
-    
+
     if (server.stdout) {
       server.stdout.on('data', stdoutListener);
     }
-    
+
     // Also set a timeout to resolve anyway if we don't see ready message
     setTimeout(() => {
       const errorDetails = errorDetailsGetter();
@@ -569,37 +569,37 @@ function setupOutputHandlers(server: any) {
   let serverOutputBuffer = "";
   let serverErrorBuffer = "";
   let errorDetails = "";
-  
+
   // Configure error handling
   server.on('error', (err: Error) => {
     const errMsg = err?.message || String(err);
     log(`Server process error: ${errMsg}`);
     errorDetails = `Process error: ${errMsg}`;
   });
-  
+
   // Capture stdout
   if (server.stdout) {
     server.stdout.on('data', (data: Buffer) => {
       const output = data.toString();
       serverOutputBuffer += output;
-      
+
       // Log output for debugging
       output.split('\n').filter(Boolean).forEach((line: string) => {
         log(`Server stdout: ${line.trim()}`);
       });
-      
+
       // Look for error indicators
-      if ((output.includes('Error') || output.includes('error')) && 
-          !output.includes('compiled') && 
+      if ((output.includes('Error') || output.includes('error')) &&
+          !output.includes('compiled') &&
           !output.includes('successfully')) {
         errorDetails = output.split('\n')
           .find((line: string) => line.includes('Error') || line.includes('error'))
           ?.trim() || output.trim();
       }
-      
+
       // Look for dependency issues
       if (output.includes('not found') || output.includes('missing')) {
-        const match = output.match(/['"]([^'"]+)['"] not found/) || 
+        const match = output.match(/['"]([^'"]+)['"] not found/) ||
                      output.match(/missing ([^'"]+)/i);
         if (match && match[1]) {
           errorDetails = `Missing dependency: ${match[1]}`;
@@ -607,82 +607,82 @@ function setupOutputHandlers(server: any) {
       }
     });
   }
-  
+
   // Capture stderr
   if (server.stderr) {
     server.stderr.on('data', (data: Buffer) => {
       const output = data.toString();
       serverErrorBuffer += output;
-      
+
       // Log error output for debugging
       output.split('\n').filter(Boolean).forEach((line: string) => {
         log(`Server stderr: ${line.trim()}`);
       });
-      
+
       // Capture error details
       if (!errorDetails && (
-          output.includes('Error') || 
-          output.includes('error') || 
+          output.includes('Error') ||
+          output.includes('error') ||
           output.includes('not found')
       )) {
         errorDetails = output.trim().split('\n')[0] || '';
       }
     });
   }
-  
+
   return () => errorDetails;
 }
 
 // Server management functions
 async function startServer() {
   log("Preparing to start server");
-  
+
   // Parse the serve command
   const { cmd, args } = prepareServerCommand(serveCmd, port);
   log(`Spawning server process: ${cmd} ${args.join(" ")}`);
-  
+
   try {
     // Spawn the server process, detached so it runs in the background
-    const server = spawn(cmd, args, { 
+    const server = spawn(cmd, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, FORCE_COLOR: 'true' },
       detached: true
     });
-    
+
     if (!server || !server.pid) {
       throw new Error("Failed to spawn server process - no process ID");
     }
-    
+
     // Setup output handlers and get a function to retrieve error details
     const getErrorDetails = setupOutputHandlers(server);
-    
+
     // Create promises for server status detection
     const earlyExitPromise = createEarlyExitDetector(server, getErrorDetails);
     const serverReadyPromise = createServerReadyDetector(server, waitMs, getErrorDetails);
-    
+
     // Wait for server to start up or fail
     log(`Waiting ${waitMs}ms for server to start`);
-    
+
     // Wait for the server to be ready or fail early
     const result = await Promise.race([serverReadyPromise, earlyExitPromise]);
-    
+
     // serverReadyPromise returns true if ready, earlyExitPromise throws on error
     if (result === false) {
       throw new Error(getErrorDetails() || "Server startup failed silently");
     }
-    
+
     // Final error check
     const errorDetails = getErrorDetails();
     if (errorDetails) {
       throw new Error(errorDetails);
     }
-    
+
     log("Server is ready");
     return server;
   } catch (serverError) {
     const errorMsg = serverError instanceof Error ? serverError.message : String(serverError);
     log(`Server start failed: ${errorMsg}`);
-    
+
     // Ensure we have a meaningful error message
     if (!errorMsg || errorMsg === "error when starting dev server:") {
       throw new Error("Failed to start server - check dependencies and server configuration");
@@ -698,11 +698,11 @@ async function stopServer(server: any) {
     log("Warning: Server object not valid or missing kill function");
     return;
   }
-  
+
   try {
     // Kill entire process group (for detached processes)
-    server.kill('SIGTERM'); 
-    
+    server.kill('SIGTERM');
+
     // Handle platform-specific cleanup
     if (process.platform === 'win32') {
       // Windows needs special handling for detached processes
@@ -715,76 +715,76 @@ async function stopServer(server: any) {
         // Ignore errors, as the process might already be gone
       }
     }
-    
+
     log("Server process killed");
   } catch (killError) {
     log(`Error killing server: ${killError instanceof Error ? killError.message : String(killError)}`);
   }
 }
-    
+
     try {
       // Iterate commits
       log("Beginning frame creation process");
-      
+
       // Initial checkout and setup
       if (commits.length > 0) {
         // If we're resuming, checkout the commit at the resume point
         // Otherwise, checkout the first commit
         const commitToCheckout = startIndex > 0 ? commits[startIndex] : commits[0];
-        
+
         if (commitToCheckout) {
           log(`Checking out initial commit: ${commitToCheckout.substring(0, 8)}`);
           execSync(`git checkout ${commitToCheckout} --quiet`);
           log("Initial commit checked out successfully");
-          
+
           // Store original package.json content for comparison and restoration
           const pkgContent = fs.readFileSync(pkgPath, "utf8");
           prevPackageJson = pkgContent;
-          
+
           // Detect and install dependencies for this commit
           const packageManager = detectPackageManager(serveCmd);
-          
+
           // Install dependencies directly in the project
           pretty(`📦 Installing dependencies using ${packageManager}...`, "info");
           await installDependencies(packageManager);
-          
+
           log("Dependencies installed without modifying project files");
         } else {
           log("Warning: Initial commit is undefined, skipping initial checkout");
         }
       }
-      
+
       // Variable to track server instance
       let server: any = null;
-      
+
       try {
         // Process each commit, starting from the resume point if applicable
-        
+
         for (let i = startIndex; i < commits.length; i++) {
           const sha = commits[i];
-          
+
           // Skip undefined or empty SHA values
           if (!sha) {
             log(`Skipping undefined commit at index ${i}`);
             continue;
           }
-          
+
           log(`Processing commit ${i+1}/${commits.length}: ${sha.substring(0, 8)}`);
-          
+
           // Get commit date and message
           log("Getting commit metadata");
           const date = execSync(`git show -s --format=%ci ${sha}`).toString().trim();
           const message = execSync(`git show -s --format=%s ${sha}`).toString().trim();
           log(`Commit date: ${date}, message: ${message}`);
-          
+
           // Format and print commit status
           const formattedDate = new Date(date).toLocaleDateString();
           const truncatedMessage = message.substring(0, 60) + (message.length > 60 ? '...' : '');
-          
+
           // Use formatted progress indicator
-          console.log('\x1b[35m[%d/%d]\x1b[33m %s\x1b[0m - \x1b[36m%s\x1b[0m', 
+          console.log('\x1b[35m[%d/%d]\x1b[33m %s\x1b[0m - \x1b[36m%s\x1b[0m',
             i+1, commits.length, formattedDate, truncatedMessage);
-          
+
           // Skip checkout for the first iteration if we're starting from the beginning
           // or if we've already checked out the correct commit during resumption
           if (!(i === 0 && startIndex === 0) && !(i === startIndex && startIndex > 0)) {
@@ -792,20 +792,20 @@ async function stopServer(server: any) {
             execSync(`git checkout ${sha} --quiet`);
             log("Checkout complete");
           }
-          
+
           // Check if package.json has changed from previous commit
           const { packageJsonChanged, newPkgContent } = await checkPackageJsonChanges(prevPackageJson);
-          
+
           // Update the reference for next comparison
           if (packageJsonChanged && newPkgContent) {
             prevPackageJson = newPkgContent;
-            
+
             // Handle dependency installation if needed
             const packageManager = detectPackageManager(serveCmd);
             pretty(`📦 Dependencies changed, reinstalling using ${packageManager}...`, "info");
             await installDependencies(packageManager);
           }
-          
+
           // Server reuse logic - only restart if dependencies changed or no server is running
           if (packageJsonChanged || !server) {
             // Stop existing server if running
@@ -813,15 +813,15 @@ async function stopServer(server: any) {
               await stopServer(server);
               server = null;
             }
-            
+
             // Start server for this commit
             try {
               pretty(`🚀 Starting server for commit ${i+1}/${commits.length}`, "info");
-              
+
               // Set DEBUG temporarily to see server output during startup
               const originalDebug = process.env.DEBUG;
               process.env.DEBUG = "true";
-              
+
               try {
                 server = await startServer();
               } finally {
@@ -829,11 +829,11 @@ async function stopServer(server: any) {
                 process.env.DEBUG = originalDebug;
               }
             } catch (serverStartError) {
-              const errorMsg = serverStartError instanceof Error ? 
+              const errorMsg = serverStartError instanceof Error ?
                 serverStartError.message : String(serverStartError);
-              
+
               pretty(`⚠️ Commit ${i+1}/${commits.length}: ${sha.substring(0, 8)} - ${message}`, "warning");
-              
+
               // Format the error message for better readability
               if (errorMsg.includes('dependency') || errorMsg.includes('not found')) {
                 // Extract the dependency name if possible, otherwise show the full error
@@ -844,44 +844,44 @@ async function stopServer(server: any) {
               } else {
                 pretty(`   No screenshot saved - Server start failed (check server configuration)`, "warning");
               }
-              
+
               continue; // Skip to next commit if server fails to start
             }
           } else {
             // Using existing server (reuse)
             log(`Reusing server for commit ${i+1}/${commits.length}`);
           }
-          
+
           // Capture screenshot
           log(`Preparing to take screenshot at route: ${route}`);
           try {
             // Attempt to navigate to the page and check for errors
             const response = await navigateWithRetry(page, url + route, waitMs);
-            
+
             if (!response) {
               // Navigation failed silently
               skipCommitWithWarning(i, commits.length, sha, message, "Navigation failed silently");
               continue;
             }
-            
+
             // Check for HTTP error status codes
             if (!await isResponseSuccessful(page, response, i, commits.length, sha, message)) {
               continue;
             }
-            
+
             // Check for client-side error pages
             if (await isErrorPage(page)) {
               const errorMessage = await extractErrorMessage(page);
               skipCommitWithWarning(i, commits.length, sha, message, errorMessage);
               continue;
             }
-            
+
             // Check for empty pages
             if (await isEmptyPage(page)) {
               skipCommitWithWarning(i, commits.length, sha, message, "Empty or loading page");
               continue;
             }
-            
+
             // Save the screenshot
             await saveScreenshot(page, i, commits.length, message, framesPattern);
           } catch (navError) {
@@ -901,11 +901,11 @@ async function stopServer(server: any) {
       log("Closing puppeteer browser");
       await browser.close();
       log("Browser closed successfully");
-      
+
       // Return to original branch using helper functions
       await restoreRepositoryState();
     }
-    
+
     // Function to restore repository state with fallbacks
     async function restoreRepositoryState() {
       log(`Restoring repository state`);
@@ -921,12 +921,12 @@ async function stopServer(server: any) {
             // Will try fallbacks below
           }
         }
-        
+
         // Try fallbacks in order
         if (await tryCheckoutHead()) return;
         if (await tryCheckoutMain()) return;
         if (await tryCheckoutMaster()) return;
-        
+
         // If all fallbacks fail
         pretty(`❌ ERROR: Failed all attempts to restore repository state`, "error");
         pretty(`Please manually run: git checkout ${originalBranch || 'main'}`, "error");
@@ -935,7 +935,7 @@ async function stopServer(server: any) {
         pretty(`Please manually run: git checkout ${originalBranch || 'main'}`, "error");
       }
     }
-    
+
     async function tryCheckoutHead() {
       try {
         execSync(`git checkout HEAD --quiet`);
@@ -945,7 +945,7 @@ async function stopServer(server: any) {
         return false;
       }
     }
-    
+
     async function tryCheckoutMain() {
       try {
         execSync(`git checkout main --quiet`);
@@ -955,7 +955,7 @@ async function stopServer(server: any) {
         return false;
       }
     }
-    
+
     async function tryCheckoutMaster() {
       try {
         execSync(`git checkout master --quiet`);
@@ -971,26 +971,26 @@ async function stopServer(server: any) {
 
     // Restore original dependencies
     await cleanupEnvironment();
-    
+
     // Report the number of frames
     try {
       // Count the number of frames
       const framesGlob = `${framesPattern}*.png`;
       const frameFiles = execSync(`ls ${framesGlob} 2>/dev/null || echo ""`).toString().trim().split("\n").filter(Boolean);
-      
+
       const processedCount = frameFiles.length;
       pretty(`\nCreated ${processedCount} frames out of ${commits.length} commits`, "info");
     } catch (error) {
       // Ignore errors in summary calculation
     }
-    
+
     // Pretty completion message with ANSI colors
     console.log('\x1b[32m%s\x1b[0m', `✅ Done! Video saved at: ${outputVideoPath}`);
-    
+
     // Show cleanup instructions
     console.log('\n\x1b[36mTo clean up all generated files:\x1b[0m');
     console.log(`  rm -rf ${outDir}`);
-    
+
     // Show relative path for easier reference
     const relativeOutDir = path.relative(process.cwd(), outDir);
     if (relativeOutDir !== outDir) {
@@ -999,12 +999,12 @@ async function stopServer(server: any) {
   } catch (error) {
     pretty("❌ FATAL ERROR:", "error");
     pretty(error instanceof Error ? error.message : String(error), "error");
-    
+
     // If we have a stack trace, show it in debug mode
     if (error instanceof Error && error.stack && process.env.DEBUG) {
       console.error(error.stack);
     }
-    
+
     // Try to clean up any lock files even in case of error
     try {
       const lockFilePath = path.join(process.cwd(), 'bun.lock');
@@ -1015,7 +1015,7 @@ async function stopServer(server: any) {
     } catch (cleanupError) {
       // Ignore cleanup errors
     }
-    
+
     process.exit(1);
   }
 }
@@ -1025,28 +1025,27 @@ async function navigateWithRetry(page: any, url: string, waitMs: number) {
   log(`Navigating to ${url}`);
   const navigationTimeout = waitMs * 3;
   log(`Using navigation timeout of ${navigationTimeout}ms`);
-  
+
   let retryAttempted = false;
-  
+
   try {
-    return await page.goto(url, { 
-      waitUntil: "networkidle0", 
+    return await page.goto(url, {
+      waitUntil: "networkidle0",
       timeout: navigationTimeout
     });
   } catch (navErr) {
     if (retryAttempted) {
       throw navErr;
     }
-    
+
     // First failure, try once more with a different wait strategy
-    retryAttempted = true;
     log("Navigation failed, retrying with different wait strategy");
-    
-    const response = await page.goto(url, { 
-      waitUntil: "domcontentloaded", 
+
+    const response = await page.goto(url, {
+      waitUntil: "domcontentloaded",
       timeout: navigationTimeout
     });
-    
+
     // If we've loaded the DOM but not all resources, wait a bit more
     await new Promise(resolve => setTimeout(resolve, 1000));
     return response;
@@ -1057,11 +1056,11 @@ async function isResponseSuccessful(page: any, response: any, commitIndex: numbe
   const statusCode = response.status();
   const statusText = response.statusText();
   log(`Page loaded with status code: ${statusCode} (${statusText})`);
-  
+
   if (statusCode < 400) {
     return true;
   }
-  
+
   // Try to get more detailed error information
   let errorDetails = "";
   try {
@@ -1072,13 +1071,13 @@ async function isResponseSuccessful(page: any, response: any, commitIndex: numbe
   } catch (evalError) {
     // Ignore errors from page.evaluate
   }
-  
-  skipCommitWithWarning(commitIndex, totalCommits, sha, message, 
-    errorDetails.includes('Missing dependency') 
+
+  skipCommitWithWarning(commitIndex, totalCommits, sha, message,
+    errorDetails.includes('Missing dependency')
       ? `Dependency error: ${errorDetails.replace(' - ', '')}`
       : `HTTP ${statusCode} ${statusText}${errorDetails}`
   );
-  
+
   return false;
 }
 
@@ -1094,7 +1093,7 @@ async function extractHttpErrorDetails(page: any) {
       document.querySelector('h1, h2'),
       document.body
     ];
-    
+
     // Return the first non-empty error element text
     for (const el of errorElements) {
       if (el && el.textContent && el.textContent.trim()) {
@@ -1102,25 +1101,25 @@ async function extractHttpErrorDetails(page: any) {
         return text.length > 100 ? text.split('\n').slice(0, 2).join(' ') : text;
       }
     }
-    
+
     // Try to extract common error patterns
     const bodyText = document.body.textContent || '';
-    
+
     // Look for dependency errors
     const missingDepMatch = bodyText.match(/dependency ["']([^"']+)["'] not found/i) ||
                            bodyText.match(/Cannot find module ["']([^"']+)["']/i) ||
                            bodyText.match(/Module not found: Error: Can't resolve ["']([^"']+)["']/i);
-                   
+
     if (missingDepMatch && missingDepMatch[1]) {
       return `Missing dependency: ${missingDepMatch[1]}`;
     }
-    
+
     // Look for syntax errors
     const syntaxErrorMatch = bodyText.match(/SyntaxError: ([^\n]+)/i);
     if (syntaxErrorMatch && syntaxErrorMatch[1]) {
       return `Syntax error: ${syntaxErrorMatch[1]}`;
     }
-    
+
     return "";
   });
 }
@@ -1128,21 +1127,21 @@ async function extractHttpErrorDetails(page: any) {
 async function isErrorPage(page: any) {
   const pageTitle = await page.title();
   const pageContent = await page.content();
-  
+
   // Definitive error patterns
   const errorPatterns = [
     '404 Not Found', '500 Internal Server Error', 'Error Page',
     'Something went wrong', 'page not found', 'cannot display the webpage'
   ];
-  
+
   // Check for explicit error content
-  const hasExplicitErrorContent = errorPatterns.some(pattern => 
-    pageTitle.toLowerCase().includes(pattern.toLowerCase()) || 
+  const hasExplicitErrorContent = errorPatterns.some(pattern =>
+    pageTitle.toLowerCase().includes(pattern.toLowerCase()) ||
     pageContent.toLowerCase().includes(pattern.toLowerCase())
   );
-  
+
   // Check if the page has error elements
-  let isDefiniteErrorPage = false;
+  let isDefiniteErrorPage: boolean;
   try {
     isDefiniteErrorPage = await page.evaluate(() => {
       // Check for HTTP status code elements
@@ -1153,7 +1152,7 @@ async function isErrorPage(page: any) {
           return true;
         }
       }
-      
+
       // Check for explicit error message containers
       const errorContainers = document.querySelectorAll(
         '.error-message, .error-container, .alert-danger, .exception, ' +
@@ -1162,32 +1161,30 @@ async function isErrorPage(page: any) {
       if (Array.from(errorContainers).length > 0) {
         return true;
       }
-      
+
       // Check title for error indicators
       const title = document.title || '';
       if (
-        title.includes('404') || 
-        title.includes('500') || 
-        title.match(/not found/i) || 
+        title.includes('404') ||
+        title.includes('500') ||
+        title.match(/not found/i) ||
         title.match(/server error/i) ||
         title.match(/^error\b/i)
       ) {
         return true;
       }
-      
+
       // Check for a mostly empty page
       const contentElements = document.body.querySelectorAll('div, p, h1, h2, h3, section, main');
-      if (Array.from(contentElements).length < 3 && (document.body.textContent?.trim().length || 0) < 50) {
-        return true;
-      }
-      
-      return false;
+      return Array.from(contentElements).length < 3 && (document.body.textContent?.trim().length || 0) < 50;
+
+
     });
   } catch (evalError) {
     // If evaluation fails, assume it's not an error page
     isDefiniteErrorPage = false;
   }
-  
+
   return isDefiniteErrorPage || hasExplicitErrorContent;
 }
 
@@ -1196,11 +1193,11 @@ async function extractErrorMessage(page: any) {
     const extractedError = await page.evaluate(() => {
       // Common error message container selectors
       const errorSelectors = [
-        '.error-message', '.alert-danger', '.error-details', 
+        '.error-message', '.alert-danger', '.error-details',
         '#error-container', '[role="alert"]', '.exception-message',
         'title', 'h1', '.main-error', '.error-code', '.status-code'
       ];
-      
+
       for (const selector of errorSelectors) {
         const el = document.querySelector(selector);
         if (el && el.textContent) {
@@ -1210,27 +1207,27 @@ async function extractErrorMessage(page: any) {
           }
         }
       }
-      
+
       // Try the body text
       const bodyText = document.body.textContent || "";
       if (bodyText.length < 100) {
         return bodyText.trim();
       }
-      
+
       // Look for error messages
       const errorRegex = /error:?\s+([^\n.]+)/i;
       const match = bodyText.match(errorRegex);
       if (match && match[1]) {
         return match[1].trim();
       }
-      
+
       return "";
     });
-    
+
     if (extractedError) {
       return extractedError.substring(0, 100).replace(/\n/g, ' ');
     }
-    
+
     return "Empty or error page detected";
   } catch (evalError) {
     return "Error page (could not extract details)";
@@ -1242,19 +1239,19 @@ async function isEmptyPage(page: any) {
     return await page.evaluate(() => {
       const bodyText = document.body.textContent || "";
       const trimmedText = bodyText.trim();
-      
+
       // Check if the page has almost no content
       if (trimmedText.length < 10) {
         return true;
       }
-      
+
       // Check for visible elements
       const allElements = Array.from(document.querySelectorAll('*'));
       const visibleElements = allElements.filter(el => {
         const style = window.getComputedStyle(el);
         return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
       });
-      
+
       // If very few visible elements with content, might be empty/loading
       return visibleElements.length < 5 && trimmedText.length < 30;
     });
@@ -1269,16 +1266,16 @@ async function saveScreenshot(page: any, commitIndex: number, totalCommits: numb
   const commitWords = message.split(' ');
   const truncatedMessage = commitWords.slice(0, 5).join('_').replace(/[^a-zA-Z0-9_-]/g, '');
   const frame = `${framesPattern}${String(commitIndex).padStart(3, "0")}_${truncatedMessage}.png`;
-  
+
   log(`Saving screenshot to: ${frame}`);
   await page.screenshot({ path: frame, fullPage: true });
-  
+
   // Verify the screenshot was created
   if (!fs.existsSync(frame)) {
     pretty(`❌ Failed to create screenshot at ${frame}`, "error");
     process.exit(1);
   }
-  
+
   // Success message
   pretty(`✅ [${commitIndex+1}/${totalCommits}] Screenshot saved`, "success");
 }
@@ -1293,23 +1290,23 @@ function skipCommitWithWarning(commitIndex: number, totalCommits: number, sha: s
 function handleNavigationError(error: any, commitIndex: number, totalCommits: number, sha: string, message: string) {
   const errorMessage = error instanceof Error ? error.message : String(error);
   const shortErrorMessage = errorMessage.split('\n')[0];
-  
+
   // Identify connection errors
-  const isConnectionError = errorMessage.includes('ERR_CONNECTION') || 
+  const isConnectionError = errorMessage.includes('ERR_CONNECTION') ||
                            errorMessage.includes('ECONNREFUSED') ||
                            errorMessage.includes('ETIMEDOUT');
-  
+
   // Check for any navigation-related errors
-  const isNavigationError = isConnectionError || 
-                           errorMessage.includes('ERR_ABORTED') || 
+  const isNavigationError = isConnectionError ||
+                           errorMessage.includes('ERR_ABORTED') ||
                            errorMessage.includes('ERR_FAILED') ||
                            errorMessage.includes('ERR_NETWORK') ||
                            errorMessage.includes('navigation');
-  
+
   if (isNavigationError) {
     // Extract specific error type
     let issue = shortErrorMessage;
-    
+
     if (errorMessage.includes('ECONNREFUSED')) {
       issue = "Connection refused - server may not have started";
     } else if (errorMessage.includes('ETIMEDOUT')) {
@@ -1323,7 +1320,7 @@ function handleNavigationError(error: any, commitIndex: number, totalCommits: nu
     } else if (errorMessage.includes('ERR_FAILED')) {
       issue = "Navigation failed - page may be unreachable";
     }
-    
+
     skipCommitWithWarning(commitIndex, totalCommits, sha, message, issue);
   } else {
     // For other errors
@@ -1339,45 +1336,44 @@ async function generateTimeLapseVideo(outDir: string, framesPattern: string | un
     throw new Error("Frame pattern is required");
   }
   pretty("Creating timelapse video...", "info");
-  
+
   // Find captured frames
   const frameFiles = findCapturedFrames(outDir, framesPattern);
-  
+
   if (frameFiles.length === 0) {
     pretty("❌ No frames were created. Cannot generate video.", "error");
     process.exit(1);
   }
-  
+
   // Special handling for single frame case
   if (frameFiles.length === 1 && frameFiles[0]) {
     log("Only one frame detected, will duplicate it to create a valid video");
     // Duplicate the frame to ensure we can create a video (needs at least 2 frames)
     frameFiles.push(frameFiles[0]);
   }
-  
+
   pretty(`Found ${frameFiles.length} frames, generating video...`, "info");
-  
-  // Create a unique filename with timestamp
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-  const outputVideoPath = path.join(outDir, `timelapse-${timestamp}.mp4`);
-  
+
+  // Use a consistent filename for easier access
+  const outputVideoPath = path.join(outDir, `timelapse.mp4`);
+
   try {
     // Instead of using a concat file, we'll create a temp directory with numerically
     // named files that FFmpeg can use with a pattern
     const tmpDir = path.join(os.tmpdir(), `ffmpeg-frames-${Date.now()}`);
     fs.mkdirSync(tmpDir, { recursive: true });
-    
+
     try {
       log(`Created temporary directory for frame sequence: ${tmpDir}`);
-      
-      // Copy all frames to the temporary directory with sequential names
+
+      // Sort frames by numeric order
       const sortedFrames = frameFiles.sort((a, b) => {
         const numA = parseInt(a.match(/frame_(\d+)_/)?.[1] || '0');
         const numB = parseInt(b.match(/frame_(\d+)_/)?.[1] || '0');
         return numA - numB;
       });
       
-      // Create symbolic links to the original files with sequential names
+      // Copy all frames to the temporary directory with sequential names
       for (let i = 0; i < sortedFrames.length; i++) {
         const sourcePath = sortedFrames[i];
         if (!sourcePath) continue;
@@ -1389,16 +1385,18 @@ async function generateTimeLapseVideo(outDir: string, framesPattern: string | un
       
       // Construct the ffmpeg command using the sequence pattern
       const imgPattern = path.join(tmpDir, 'img_%06d.png');
-      const ffmpegCmd = `ffmpeg -y -i "${imgPattern}" -r ${fps} -s ${width}x${height} -c:v libx264 -pix_fmt yuv420p -movflags faststart "${outputVideoPath}"`;
+      // Use constant quality, key frames for every frame, with no frame interpolation
+      // Note: Global options (-y, -loglevel) must come before inputs, and output file must be last
+      const ffmpegCmd = `ffmpeg -y -loglevel error -framerate ${fps} -i "${imgPattern}" -vframes ${sortedFrames.length} -c:v libx264 -preset veryslow -tune stillimage -crf 16 -pix_fmt yuv420p -movflags faststart -g 1 -bf 0 "${outputVideoPath}"`;
       
-      log(`Running direct FFmpeg command: ${ffmpegCmd}`);
-      execSync(ffmpegCmd);
-      
+      log(`Running FFmpeg command with image sequence: ${ffmpegCmd}`);
+      execSync(ffmpegCmd, { stdio: ['ignore', 'pipe', 'pipe'] });
+
       // Verify the video was created
       if (!fs.existsSync(outputVideoPath)) {
         throw new Error("Failed to create video file - output file does not exist");
       }
-      
+
       pretty("✅ Video creation successful!", "success");
       return outputVideoPath;
     } finally {
@@ -1414,17 +1412,45 @@ async function generateTimeLapseVideo(outDir: string, framesPattern: string | un
   } catch (ffmpegError) {
     pretty("❌ Error creating video:", "error");
     pretty(ffmpegError instanceof Error ? ffmpegError.message : String(ffmpegError), "error");
-    
+
     // Try one more fallback approach without any temp files
     try {
-      log("Trying alternative approach with direct glob pattern...");
-      
+      log("Trying alternative approach with glob pattern...");
+
       const frameDir = path.dirname(frameFiles[0] || '');
-      const simpleCmd = `ffmpeg -y -pattern_type glob -i "${frameDir}/*.png" -r ${fps} -s ${width}x${height} -c:v libx264 -pix_fmt yuv420p "${outputVideoPath}"`;
+      const allFrames = execSync(`ls ${frameDir}/*.png 2>/dev/null || echo ""`).toString().trim().split("\n").filter(Boolean);
       
-      log(`Running fallback FFmpeg command: ${simpleCmd}`);
-      execSync(simpleCmd);
+      // Create a temporary directory for the frames
+      const tmpDir = path.join(os.tmpdir(), `ffmpeg-frames-fallback-${Date.now()}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+      log(`Created temp directory for fallback approach: ${tmpDir}`);
       
+      try {
+        // Create sequentially named copies of the frames
+        for (let i = 0; i < allFrames.length; i++) {
+          const sourcePath = allFrames[i];
+          if (!sourcePath) continue;
+          
+          const destPath = path.join(tmpDir, `img_${String(i).padStart(6, '0')}.png`);
+          fs.copyFileSync(sourcePath, destPath);
+        }
+        
+        // Use a direct sequence pattern for more reliable frame ordering
+        const imgPattern = path.join(tmpDir, 'img_%06d.png');
+        const simpleCmd = `ffmpeg -y -loglevel error -framerate ${fps} -i "${imgPattern}" -vframes ${allFrames.length} -c:v libx264 -preset medium -tune stillimage -crf 18 -pix_fmt yuv420p -g 1 -bf 0 "${outputVideoPath}"`;
+        
+        log(`Running fallback FFmpeg command: ${simpleCmd}`);
+        execSync(simpleCmd, { stdio: ['ignore', 'pipe', 'pipe'] });
+      } finally {
+        // Clean up the temporary directory
+        try {
+          execSync(`rm -rf "${tmpDir}"`);
+          log(`Cleaned up temporary directory: ${tmpDir}`);
+        } catch (cleanupError) {
+          log(`Warning: Failed to clean up temporary directory: ${cleanupError}`);
+        }
+      }
+
       if (fs.existsSync(outputVideoPath)) {
         pretty("✅ Video creation successful with fallback method!", "success");
         return outputVideoPath;
@@ -1434,7 +1460,7 @@ async function generateTimeLapseVideo(outDir: string, framesPattern: string | un
       pretty("All video creation attempts failed. Please try manually using ffmpeg.", "error");
       process.exit(1);
     }
-    
+
     process.exit(1);
   }
 }
@@ -1462,12 +1488,12 @@ function findCapturedFrames(outDir: string, framesPattern: string | undefined): 
  */
 async function cleanupEnvironment() {
   pretty("Restoring original dependencies...", "info");
-  
+
   try {
     // Detect package manager
     const packageManager = detectPackageManager('');
     const installCmd = getRegularInstallCommand(packageManager);
-    
+
     log(`Reinstalling dependencies with: ${installCmd}`);
     execSync(installCmd, { stdio: 'pipe' });
     pretty("✅ Original dependencies restored", "success");
@@ -1476,7 +1502,7 @@ async function cleanupEnvironment() {
     pretty(`Warning: Could not restore original dependencies: ${errorMsg}`, "warning");
     pretty("You may need to run 'npm install' or equivalent manually.", "warning");
   }
-  
+
   await cleanupTempFiles();
 }
 

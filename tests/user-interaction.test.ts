@@ -9,7 +9,7 @@ describe("getUserConfirmation", () => {
   
   test("returns true when gum command succeeds", async () => {
     const mockDeps: UserInteractionDependencies = {
-      execCommand: (...args: any[]) => Buffer.from(""),
+      execCommand: () => Buffer.from(""),
       createReadline: () => ({} as any),
       loggerPretty: () => {},
       loggerLog: () => {}
@@ -21,7 +21,7 @@ describe("getUserConfirmation", () => {
   
   test("returns false when gum command exits with non-zero code and message includes 'Command failed'", async () => {
     const mockDeps: UserInteractionDependencies = {
-      execCommand: (...args: any[]) => {
+      execCommand: () => {
         const error: any = new Error("Command failed with exit code 1");
         throw error;
       },
@@ -36,7 +36,7 @@ describe("getUserConfirmation", () => {
   
   test("returns true for other errors in test environment", async () => {
     const mockDeps: UserInteractionDependencies = {
-      execCommand: (...args: any[]) => {
+      execCommand: () => {
         const error: any = new Error("Command not found: gum");
         throw error;
       },
@@ -51,7 +51,7 @@ describe("getUserConfirmation", () => {
   
   test("returns the correct value for other errors in test environment", async () => {
     const mockDeps: UserInteractionDependencies = {
-      execCommand: (...args: any[]) => {
+      execCommand: () => {
         throw new Error("Unexpected error");
       },
       createReadline: () => { throw new Error("Readline error"); },
