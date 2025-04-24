@@ -6,8 +6,10 @@ import path from "path";
 import puppeteer from "puppeteer";
 import { spawn } from "child_process";
 import { parseArgs, detectServeCommand } from "./cli";
-import * as readline from 'readline';
 import os from "os";
+import { log, pretty } from "./logger";
+import { getUserConfirmation } from "./user-interaction";
+import { checkResumeAndPrompt } from "./resume-utils";
 
 // Show help information
 function showHelp() {
@@ -32,68 +34,6 @@ function showHelp() {
     - Automatic resume: If existing frames are found in the output directory,
       you'll be prompted to resume from where you left off or start over
   `);
-}
-
-// Prompt user for confirmation using gum
-async function getUserConfirmation(prompt: string): Promise<boolean> {
-  try {
-    // Try to use gum for a pretty interface
-    try {
-      // This will throw with non-zero exit code if user selects "No"
-      execSync(`gum confirm "${prompt}"`, { stdio: 'inherit' });
-      return true;
-    } catch (gumError) {
-      // Non-zero exit means user chose "No"
-      if (gumError instanceof Error && gumError.message.includes('Command failed')) {
-        return false;
-      }
-      
-      // If it's another error (like gum not installed), fall back to basic prompt
-      pretty("(gum not found, using fallback prompt)", "info");
-      const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-      });
-      
-      return new Promise(resolve => {
-        rl.question(`${prompt} (y/n) `, answer => {
-          rl.close();
-          resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes');
-        });
-      });
-    }
-  } catch (error) {
-    // Handle unexpected errors
-    log(`Error in confirmation UI: ${error instanceof Error ? error.message : String(error)}`);
-    return false;
-  }
-}
-
-// Simple logging with no timestamps - silent by default
-function log(message: string): void {
-  // Only print in verbose mode for debug purposes
-  if (process.env.DEBUG) {
-    console.log(message);
-  }
-}
-
-// Pretty printing with console colors
-function pretty(message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info'): void {
-  switch (type) {
-    case 'success':
-      console.log('\x1b[32m%s\x1b[0m', message);  // Green
-      break;
-    case 'warning':
-      console.log('\x1b[33m%s\x1b[0m', message);  // Yellow 
-      break;
-    case 'error':
-      console.log('\x1b[31m%s\x1b[0m', message);  // Red
-      break;
-    case 'info':
-    default:
-      console.log('\x1b[36m%s\x1b[0m', message);  // Cyan
-      break;
-  }
 }
 
 // Git safety functions - strictly read-only
@@ -274,75 +214,19 @@ async function main() {
     }
     
     // Check if we can resume from a previous run
-    let startIndex = 0;
-    try {
-      if (fs.existsSync(outDir)) {
-        // Look for existing frames in the output directory
-        const framePattern = `${framesPattern}*.png`;
-        const existingFrames = execSync(`ls ${framePattern} 2>/dev/null || echo ""`)
-          .toString()
-          .trim()
-          .split("\n")
-          .filter(Boolean);
-          
-        if (existingFrames.length > 0) {
-          // Sort the frames by number to get the last one
-          const sortedFrames = existingFrames.sort((a, b) => {
-            const numA = parseInt(a.match(/frame_(\d+)_/)?.[1] || '0');
-            const numB = parseInt(b.match(/frame_(\d+)_/)?.[1] || '0');
-            return numB - numA; // Reverse sort to get highest frame number first
-          });
-          
-          // Get the frame number of the last frame
-          const lastFrame = sortedFrames[0];
-          if (lastFrame) {
-            const lastFrameNumberMatch = lastFrame.match(/frame_(\d+)_/);
-            
-            if (lastFrameNumberMatch && lastFrameNumberMatch[1]) {
-              const lastFrameNumber = parseInt(lastFrameNumberMatch[1]);
-              // Get details of the last processed commit
-              const lastSha = commits[lastFrameNumber] || "";
-              let lastCommitInfo = "";
-              if (lastSha) {
-                try {
-                  const message = execSync(`git show -s --format=%s ${lastSha}`).toString().trim();
-                  lastCommitInfo = ` (${lastSha.substring(0, 8)}: ${message})`;
-                } catch (e) {
-                  // Ignore error getting commit info
-                }
-              }
-              
-              // Ask user if they want to resume or start over
-              pretty(`Found ${existingFrames.length} existing frames in ${outDir}`, "info");
-              pretty(`Last processed commit: #${lastFrameNumber + 1}${lastCommitInfo}`, "info");
-              
-              const resumeConfirm = await getUserConfirmation("Resume from last processed commit?");
-              
-              if (resumeConfirm) {
-                // Start from the next commit after the last processed one
-                startIndex = lastFrameNumber + 1;
-                
-                if (startIndex < commits.length) {
-                  pretty(`Resuming from commit ${startIndex + 1}/${commits.length}`, "success");
-                } else {
-                  pretty("All commits have already been processed. Nothing to do.", "info");
-                  return;
-                }
-              } else {
-                // User chose to start over
-                pretty("Starting from the beginning (existing frames will be overwritten)", "warning");
-                startIndex = 0;
-              }
-            }
-          }
-        }
-      }
-    } catch (error) {
-      // If there's any error checking for existing frames, just start from the beginning
-      log(`Error checking for existing frames: ${error instanceof Error ? error.message : String(error)}`);
-      log("Starting from the first commit");
-      startIndex = 0;
+    const startIndexResult = await checkResumeAndPrompt({
+      outDir,
+      framesPattern,
+      commits
+    });
+    
+    // If startIndexResult is -1, all commits have already been processed
+    if (startIndexResult === -1) {
+      return;
     }
+    
+    // Otherwise, use the returned start index
+    const startIndex = startIndexResult;
 
     if (commits.length === 0) {
       console.error("No commits found in repository history.");
