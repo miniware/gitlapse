@@ -46,6 +46,28 @@ describe("findLastProcessedFrame", () => {
     
     expect(findLastProcessedFrame("/test/dir/out", "/test/dir/out/frame_", mockDeps)).toBe(-1);
   });
+  
+  test("uses readdirSync when available", () => {
+    const mockDeps: any = {
+      existsSync: () => true,
+      readdirSync: () => [
+        "frame_3_aaa.png",
+        "frame_7_bbb.png",
+        "other.txt"
+      ],
+      execCommand: () => { throw new Error("Should not use execCommand"); }
+    };
+    expect(findLastProcessedFrame("/out", "/out/frame_", mockDeps)).toBe(7);
+  });
+  
+  test("returns -1 when readdirSync returns no frames", () => {
+    const mockDeps: any = {
+      existsSync: () => true,
+      readdirSync: () => ["foo.png", "bar.txt"],
+      execCommand: () => { throw new Error("Should not use execCommand"); }
+    };
+    expect(findLastProcessedFrame("/out", "/out/frame_", mockDeps)).toBe(-1);
+  });
 });
 
 describe("getLastCommitInfo", () => {

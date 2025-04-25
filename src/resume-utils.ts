@@ -24,19 +24,6 @@ export interface ResumeDependencies {
   };
 }
 
-// Default dependencies using the actual implementations
-const defaultDependencies: ResumeDependencies = {
-  fileUtils: {
-    findLastProcessedFrame: fileUtilsModule.findLastProcessedFrame,
-    getLastCommitInfo: fileUtilsModule.getLastCommitInfo
-  },
-  logger: {
-    pretty: loggerModule.pretty
-  },
-  userInteraction: {
-    getUserConfirmation: userInteractionModule.getUserConfirmation
-  }
-};
 
 /**
  * Check if a resume is possible and prompt the user for confirmation
@@ -45,14 +32,17 @@ const defaultDependencies: ResumeDependencies = {
  * @returns The index to start processing from (0 to start from beginning, > 0 to resume)
  */
 export async function checkResumeAndPrompt(
-  options: ResumeOptions, 
-  deps: ResumeDependencies = defaultDependencies
+  options: ResumeOptions,
+  deps?: ResumeDependencies
 ): Promise<number> {
   const { outDir, framesPattern, commits } = options;
-  const { fileUtils, logger, userInteraction } = deps;
+  const findLastProcessedFrame = deps?.fileUtils?.findLastProcessedFrame ?? fileUtilsModule.findLastProcessedFrame;
+  const getLastCommitInfo = deps?.fileUtils?.getLastCommitInfo ?? fileUtilsModule.getLastCommitInfo;
+  const pretty = deps?.logger?.pretty ?? loggerModule.pretty;
+  const getUserConfirmation = deps?.userInteraction?.getUserConfirmation ?? userInteractionModule.getUserConfirmation;
   
   // Look for the last processed frame
-  const lastFrameNumber = fileUtils.findLastProcessedFrame(outDir, framesPattern);
+  const lastFrameNumber = findLastProcessedFrame(outDir, framesPattern);
   
   // If no frames found or invalid frame number, start from beginning
   if (lastFrameNumber < 0) {
@@ -60,7 +50,7 @@ export async function checkResumeAndPrompt(
   }
   
   // If the last frame number is valid, get info about the last commit
-  const lastCommitInfo = fileUtils.getLastCommitInfo(lastFrameNumber, commits);
+  const lastCommitInfo = getLastCommitInfo(lastFrameNumber, commits);
   
   // If no commit info found, start from beginning
   if (!lastCommitInfo) {
@@ -68,26 +58,25 @@ export async function checkResumeAndPrompt(
   }
   
   // Show info to the user
-  logger.pretty(`Found existing frames in ${outDir}`, "info");
-  logger.pretty(`Last processed commit: #${lastFrameNumber + 1} (${lastCommitInfo.shortSha}: ${lastCommitInfo.message})`, "info");
+  pretty(`Found existing frames in ${outDir}`, "info");
+  pretty(`Last processed commit: #${lastFrameNumber + 1} (${lastCommitInfo.shortSha}: ${lastCommitInfo.message})`, "info");
   
   // Ask user if they want to resume
-  const resumeConfirm = await userInteraction.getUserConfirmation("Resume from last processed commit?");
+  const resumeConfirm = await getUserConfirmation("Resume from last processed commit?");
   
   if (resumeConfirm) {
     // Start from the next commit after the last processed one
     const startIndex = lastFrameNumber + 1;
-    
     if (startIndex < commits.length) {
-      logger.pretty(`Resuming from commit ${startIndex + 1}/${commits.length}`, "success");
+      pretty(`Resuming from commit ${startIndex + 1}/${commits.length}`, "success");
       return startIndex;
     } else {
-      logger.pretty("All commits have already been processed. Nothing to do.", "info");
+      pretty("All commits have already been processed. Nothing to do.", "info");
       return -1; // Signal that all commits are already processed
     }
   } else {
     // User chose to start over
-    logger.pretty("Starting from the beginning (existing frames will be overwritten)", "warning");
+    pretty("Starting from the beginning (existing frames will be overwritten)", "warning");
     return 0;
   }
 }

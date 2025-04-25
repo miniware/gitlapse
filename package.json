@@ -2,17 +2,17 @@
   "name": "git-lapse",
   "version": "0.1.0",
   "description": "Create timelapse videos of your web project's development",
-  "module": "index.ts",
+  "module": "src/index.ts",
   "type": "module",
-  "files": ["dist/", "index.ts", "cli.ts"],
+  "files": ["dist/", "src/"],
   "bin": {
     "git-lapse": "./dist/git-lapse"
   },
   "scripts": {
-    "start": "bun index.ts",
+    "start": "bun src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "build": "bun build index.ts --compile --outfile ./dist/git-lapse"
+    "build": "bun build src/index.ts --compile --outfile ./dist/git-lapse"
   },
   "devDependencies": {
     "@types/bun": "latest",

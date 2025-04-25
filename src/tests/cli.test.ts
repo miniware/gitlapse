@@ -107,3 +107,23 @@ describe("detectServeCommand", () => {
     expect(() => detectServeCommand(scripts)).toThrow("No 'dev' or 'start' script found in package.json.");
   });
 });
+
+describe("parseArgs error cases", () => {
+  const cwd = "/test";
+  const flags = [
+    ["-o"], ["--out-dir"],
+    ["-w"], ["--width"],
+    ["-h"], ["--height"],
+    ["--wait"],
+    ["-r"], ["--route"],
+    ["-p"], ["--port"],
+    ["--branch"],
+    ["--max-commits"],
+    ["--fps"]
+  ];
+  for (const [flag] of flags) {
+    test(`throws missing value for ${flag}`, () => {
+      expect(() => parseArgs([flag as string], cwd)).toThrow(`Missing value for ${flag}`);
+    });
+  }
+});
