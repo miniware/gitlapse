@@ -282,7 +282,7 @@ export async function saveScreenshot(
   const frame = `${framesPattern}${String(commitIndex).padStart(3, "0")}_${truncatedMessage}.png`;
 
   log(`Saving screenshot to: ${frame}`);
-  await page.screenshot({ path: frame, fullPage: true });
+  await page.screenshot({ path: frame, fullPage: false });
 
   // Verify the screenshot was created
   if (!fs.existsSync(frame)) {

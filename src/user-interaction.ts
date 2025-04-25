@@ -1,24 +1,22 @@
-import * as readline from 'readline';
-import { pretty } from './logger';
+import { spawn } from 'child_process';
+import { pretty, log } from './logger';
 
 /**
  * Options for user confirmations
  */
 export interface ConfirmationOptions {
   defaultValue?: boolean;
-  timeoutMs?: number;
-  timeoutDefault?: boolean;
 }
 
 /**
- * Prompt user for confirmation via a simple y/n question with enhanced options
- * In test environments (NODE_ENV === 'test'), defaults to specified value or true
+ * Prompt user for confirmation using gum with proper stdio handling
+ * In test environments, defaults to specified value or true
  * 
  * @param prompt - The prompt message to display
  * @param options - Optional confirmation options
  * @returns Promise resolving to boolean based on user input
  */
-export function getUserConfirmation(
+export async function getUserConfirmation(
   prompt: string, 
   options: ConfirmationOptions = {}
 ): Promise<boolean> {
@@ -27,111 +25,80 @@ export function getUserConfirmation(
     return Promise.resolve(options.defaultValue ?? true);
   }
 
-  const { defaultValue, timeoutMs, timeoutDefault } = options;
-  const defaultPrompt = defaultValue === undefined ? 'y/n' : 
-                        defaultValue === true ? 'Y/n' : 'y/N';
-
-  const rl = readline.createInterface({ 
-    input: process.stdin, 
-    output: process.stdout 
-  });
-
-  return new Promise<boolean>(resolve => {
-    // Add timeout if specified
-    let timeoutId: NodeJS.Timeout | undefined;
+  return new Promise(resolve => {
+    const { defaultValue } = options;
+    const args = ['confirm'];
     
-    if (timeoutMs && timeoutMs > 0) {
-      timeoutId = setTimeout(() => {
-        rl.close();
-        const result = timeoutDefault ?? defaultValue ?? false;
-        pretty(`Confirmation timed out after ${timeoutMs}ms. Using default: ${result}`, "info");
-        resolve(result);
-      }, timeoutMs);
+    if (defaultValue === true) {
+      args.push('--default');
     }
-
-    rl.question(`${prompt} (${defaultPrompt}) `, answer => {
-      // Clear timeout if it was set
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-      
-      rl.close();
-      
-      // If empty string, use default value if provided
-      if (answer.trim() === '' && defaultValue !== undefined) {
-        return resolve(defaultValue);
-      }
-      
-      const normalized = answer.trim().toLowerCase();
-      resolve(normalized === 'y' || normalized === 'yes');
+    
+    args.push(prompt);
+    
+    // Must use spawn with stdio: 'inherit' to properly show interactive prompts
+    const gumProcess = spawn('gum', args, { 
+      stdio: 'inherit'
+    });
+    
+    gumProcess.on('close', code => {
+      // Exit code 0 means "Yes", any other means "No"
+      resolve(code === 0);
     });
   });
 }
 
 /**
- * Prompt user for textual input with optional default value and validation
+ * Prompt user for textual input using gum with proper stdio handling
  * 
  * @param prompt - The prompt message to display
  * @param defaultValue - Optional default value if user provides empty input
- * @param validator - Optional validation function
  * @returns Promise resolving to user input string
  */
-export function getUserInput(
+export async function getUserInput(
   prompt: string,
-  defaultValue?: string,
-  validator?: (input: string) => boolean | string
+  defaultValue?: string
 ): Promise<string> {
   // In test environment, return the default value or empty string
   if (process.env.NODE_ENV === 'test') {
     return Promise.resolve(defaultValue || '');
   }
   
-  const defaultPrompt = defaultValue ? ` (default: ${defaultValue})` : '';
-  const rl = readline.createInterface({ 
-    input: process.stdin, 
-    output: process.stdout 
-  });
+  const args = ['input', '--placeholder', prompt];
   
-  return new Promise<string>((resolve, reject) => {
-    const askQuestion = () => {
-      rl.question(`${prompt}${defaultPrompt}: `, answer => {
-        // Use default value for empty input if provided
-        const value = answer.trim() === '' && defaultValue ? defaultValue : answer.trim();
-        
-        // Validate input if validator is provided
-        if (validator) {
-          const validationResult = validator(value);
-          if (validationResult !== true) {
-            // Show error message if validation failed
-            if (typeof validationResult === 'string') {
-              pretty(validationResult, "error");
-            } else {
-              pretty("Invalid input, please try again", "error");
-            }
-            
-            // Ask again
-            return askQuestion();
-          }
-        }
-        
-        rl.close();
-        resolve(value);
-      });
-    };
+  if (defaultValue) {
+    args.push('--value', defaultValue);
+  }
+  
+  return new Promise((resolve) => {
+    // Use stdin/stdout redirection for capturing input
+    const gumProcess = spawn('gum', args, {
+      stdio: ['inherit', 'pipe', 'inherit']
+    });
     
-    askQuestion();
+    let output = '';
+    
+    if (gumProcess.stdout) {
+      gumProcess.stdout.on('data', (data) => {
+        output += data.toString();
+      });
+    }
+    
+    gumProcess.on('close', () => {
+      const value = output.trim();
+      resolve(value || defaultValue || '');
+    });
   });
 }
 
 /**
- * Display a multi-choice menu and get user selection
+ * Display a multi-choice menu using gum with proper stdio handling
  * 
  * @param prompt - The prompt message to display
  * @param choices - Array of choice objects with value and label
  * @param defaultIndex - Optional index of default choice
  * @returns Promise resolving to the value of the selected choice
  */
-export function getUserChoice<T>(
+export async function getUserChoice<T>(
   prompt: string,
   choices: Array<{ value: T, label: string }>,
   defaultIndex = 0
@@ -149,49 +116,42 @@ export function getUserChoice<T>(
     throw new Error("No choices provided for selection menu");
   }
   
-  const rl = readline.createInterface({ 
-    input: process.stdin, 
-    output: process.stdout 
-  });
+  // Extract just the labels for gum
+  const labels = choices.map(choice => choice.label);
   
-  // Display menu
-  console.log(`\n${prompt}`);
-  choices.forEach((choice, index) => {
-    const defaultMarker = index === defaultIndex ? " (default)" : "";
-    console.log(`${index + 1}. ${choice.label}${defaultMarker}`);
-  });
-  
-  return new Promise<T>((resolve, reject) => {
-    const askQuestion = () => {
-      rl.question(`Enter selection (1-${choices.length}) or press Enter for default: `, answer => {
-        const value = answer.trim();
-        
-        // Empty input uses default
-        if (value === '') {
-          rl.close();
-          const defaultChoice = choices[defaultIndex];
-          if (!defaultChoice) {
-            return reject(new Error("No default choice available at index: " + defaultIndex));
-          }
-          return resolve(defaultChoice.value);
-        }
-        
-        // Parse numeric input
-        const selection = parseInt(value, 10);
-        if (isNaN(selection) || selection < 1 || selection > choices.length) {
-          pretty(`Please enter a number between 1 and ${choices.length}`, "error");
-          return askQuestion();
-        }
-        
-        rl.close();
-        const selectedChoice = choices[selection - 1];
-        if (!selectedChoice) {
-          return reject(new Error("Selected choice not available at index: " + (selection - 1)));
-        }
-        resolve(selectedChoice.value);
-      });
-    };
+  // Build gum args
+  const args = ['choose', '--header', prompt, ...labels];
+
+  return new Promise((resolve) => {
+    // Use stdin/stdout redirection for interactive selection
+    const gumProcess = spawn('gum', args, {
+      stdio: ['inherit', 'pipe', 'inherit']
+    });
     
-    askQuestion();
+    let output = '';
+    
+    if (gumProcess.stdout) {
+      gumProcess.stdout.on('data', (data) => {
+        output += data.toString();
+      });
+    }
+    
+    gumProcess.on('close', (code) => {
+      const selectedLabel = output.trim();
+      
+      // Find the matching choice
+      const selectedChoice = choices.find(choice => choice.label === selectedLabel);
+      
+      if (selectedChoice) {
+        resolve(selectedChoice.value);
+      } else {
+        // If not found or user cancelled, return default
+        const defaultChoice = choices[defaultIndex];
+        if (!defaultChoice) {
+          throw new Error("No default choice available");
+        }
+        resolve(defaultChoice.value);
+      }
+    });
   });
 }
