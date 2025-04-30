@@ -94,43 +94,43 @@ export async function installDependencies(packageManager: string): Promise<void>
 }
 
 /**
- * Check if package.json has changed and extract dependency changes
+ * Check if dependencies have changed and extract dependency changes
  */
-export async function checkPackageJsonChanges(prevPackageJson: string): Promise<{ 
-  packageJsonChanged: boolean; 
-  newPkgContent?: string 
+export async function checkPackageJsonChanges(dependencyState: string): Promise<{ 
+  dependenciesChanged: boolean; 
+  newDependencyState?: string 
 }> {
   try {
     // Detect project type from the stored format
-    if (prevPackageJson && prevPackageJson.startsWith('rails:')) {
-      return handleRailsProjectChanges(prevPackageJson);
-    } else if (prevPackageJson && prevPackageJson.startsWith('hybrid:')) {
-      return handleHybridProjectChanges(prevPackageJson);
+    if (dependencyState && dependencyState.startsWith('rails:')) {
+      return handleRailsProjectChanges(dependencyState);
+    } else if (dependencyState && dependencyState.startsWith('hybrid:')) {
+      return handleHybridProjectChanges(dependencyState);
     } else {
-      return handleJsProjectChanges(prevPackageJson);
+      return handleJsProjectChanges(dependencyState);
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     pretty(`❌ Error checking dependencies: ${errorMsg}`, "error");
-    return { packageJsonChanged: false };
+    return { dependenciesChanged: false };
   }
 }
 
 /**
  * Check for dependency changes in a Rails project
  */
-function handleRailsProjectChanges(prevPackageJson: string): { 
-  packageJsonChanged: boolean; 
-  newPkgContent?: string 
+function handleRailsProjectChanges(dependencyState: string): { 
+  dependenciesChanged: boolean; 
+  newDependencyState?: string 
 } {
   const gemfileLockPath = path.join(process.cwd(), "Gemfile.lock");
   if (!fs.existsSync(gemfileLockPath)) {
     // If no Gemfile.lock, consider it unchanged
-    return { packageJsonChanged: false };
+    return { dependenciesChanged: false };
   }
   
   // Extract the previous timestamp
-  const prevTimestampStr = prevPackageJson.split(':')[1] || "0";
+  const prevTimestampStr = dependencyState.split(':')[1] || "0";
   let prevTimestamp = 0;
   
   try {
@@ -147,24 +147,24 @@ function handleRailsProjectChanges(prevPackageJson: string): {
   
   if (gemfileLockStats.mtimeMs > prevTimestamp) {
     log("Gemfile.lock has changed since previous commit");
-    return { packageJsonChanged: true, newPkgContent: `rails:${gemfileLockStats.mtimeMs}` };
+    return { dependenciesChanged: true, newDependencyState: `rails:${gemfileLockStats.mtimeMs}` };
   } else {
     log("Gemfile.lock unchanged from previous commit");
-    return { packageJsonChanged: false, newPkgContent: `rails:${gemfileLockStats.mtimeMs}` };
+    return { dependenciesChanged: false, newDependencyState: `rails:${gemfileLockStats.mtimeMs}` };
   }
 }
 
 /**
  * Check for dependency changes in a hybrid project (Rails + JS)
  */
-function handleHybridProjectChanges(prevPackageJson: string): { 
-  packageJsonChanged: boolean; 
-  newPkgContent?: string 
+function handleHybridProjectChanges(dependencyState: string): { 
+  dependenciesChanged: boolean; 
+  newDependencyState?: string 
 } {
-  const parts = prevPackageJson.split(':');
+  const parts = dependencyState.split(':');
   if (parts.length < 3) {
     // Invalid format, assume changed
-    return { packageJsonChanged: true };
+    return { dependenciesChanged: true };
   }
   
   const prevGemfileTimestamp = parseFloat(parts[1] || "0");
@@ -224,35 +224,35 @@ function handleHybridProjectChanges(prevPackageJson: string): {
   
   // Return true if either dependency source changed
   return { 
-    packageJsonChanged: gemfileChanged || pkgJsonChanged, 
-    newPkgContent: `hybrid:${currentGemfileTimestamp}:${currentPkgContent}`
+    dependenciesChanged: gemfileChanged || pkgJsonChanged, 
+    newDependencyState: `hybrid:${currentGemfileTimestamp}:${currentPkgContent}`
   };
 }
 
 /**
  * Check for dependency changes in a JavaScript project
  */
-function handleJsProjectChanges(prevPackageJson: string): { 
-  packageJsonChanged: boolean; 
-  newPkgContent?: string 
+function handleJsProjectChanges(dependencyState: string): { 
+  dependenciesChanged: boolean; 
+  newDependencyState?: string 
 } {
   const pkgPath = path.join(process.cwd(), "package.json");
   
   if (!fs.existsSync(pkgPath)) {
-    return { packageJsonChanged: false };
+    return { dependenciesChanged: false };
   }
   
   const currentPackageJson = fs.readFileSync(pkgPath, "utf8");
   
   // If the files are identical, no change
-  if (currentPackageJson === prevPackageJson) {
+  if (currentPackageJson === dependencyState) {
     log("package.json unchanged from previous commit");
-    return { packageJsonChanged: false };
+    return { dependenciesChanged: false };
   }
   
   // Parse package.json to compare dependencies specifically
   try {
-    const prevPkg = JSON.parse(prevPackageJson || "{}");
+    const prevPkg = JSON.parse(dependencyState || "{}");
     const currentPkg = JSON.parse(currentPackageJson);
     
     const prevDeps = {
@@ -270,15 +270,15 @@ function handleJsProjectChanges(prevPackageJson: string): {
     
     if (depsChanged) {
       log("package.json dependencies have changed since previous commit");
-      return { packageJsonChanged: true, newPkgContent: currentPackageJson };
+      return { dependenciesChanged: true, newDependencyState: currentPackageJson };
     } else {
       log("package.json content changed but dependencies are the same");
-      return { packageJsonChanged: false, newPkgContent: currentPackageJson };
+      return { dependenciesChanged: false, newDependencyState: currentPackageJson };
     }
   } catch (parseError) {
     // If there's a parsing error, assume we need to reinstall
     log(`Error parsing package.json: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
-    return { packageJsonChanged: true, newPkgContent: currentPackageJson };
+    return { dependenciesChanged: true, newDependencyState: currentPackageJson };
   }
 }
 

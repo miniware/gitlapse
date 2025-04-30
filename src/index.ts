@@ -314,7 +314,7 @@ async function processCommits(
 
   try {
     // Initial checkout and setup
-    let prevPackageJson = "";
+    let dependencyState = "";
     if (commits.length > 0) {
       // If we're resuming, checkout the commit at the resume point
       // Otherwise, checkout the first commit
@@ -342,9 +342,9 @@ async function processCommits(
             const gemfileLockPath = path.join(process.cwd(), "Gemfile.lock");
             if (fs.existsSync(gemfileLockPath)) {
               const gemfileLockStats = fs.statSync(gemfileLockPath);
-              prevPackageJson = `rails:${gemfileLockStats.mtimeMs}`;
+              dependencyState = `rails:${gemfileLockStats.mtimeMs}`;
             } else {
-              prevPackageJson = "rails:0";
+              dependencyState = "rails:0";
             }
             break;
             
@@ -352,7 +352,7 @@ async function processCommits(
             // For JS projects, use package.json
             const jsPkgPath = path.join(process.cwd(), "package.json");
             const pkgContent = fs.readFileSync(jsPkgPath, "utf8");
-            prevPackageJson = pkgContent;
+            dependencyState = pkgContent;
             break;
             
           case "hybrid":
@@ -367,7 +367,7 @@ async function processCommits(
               gemfileLockTime = String(gemStats.mtimeMs);
             }
             
-            prevPackageJson = `hybrid:${gemfileLockTime}:${hybridPkgContent}`;
+            dependencyState = `hybrid:${gemfileLockTime}:${hybridPkgContent}`;
             break;
         }
 
@@ -391,11 +391,11 @@ async function processCommits(
       // Process each commit, starting from the resume point if applicable
       for (let i = startIndex; i < commits.length; i++) {
         const result = await processCommit(
-          i, commits, startIndex, prevPackageJson, serveCmd,
+          i, commits, startIndex, dependencyState, serveCmd,
           server, url, route, waitBeforeMs, waitAfterMs, page, framesPattern
         );
         server = result.server;
-        prevPackageJson = result.prevPackageJson;
+        dependencyState = result.dependencyState;
       }
     } finally {
       // Ensure server is always killed, even if screenshot fails
@@ -423,7 +423,7 @@ async function processCommit(
   i: number,
   commits: string[],
   startIndex: number,
-  prevPackageJsonRef: string,
+  dependencyStateRef: string,
   serveCmd: string,
   serverRef: any,
   url: string,
@@ -432,15 +432,15 @@ async function processCommit(
   waitAfterMs: number,
   page: any,
   framesPattern: string
-): Promise<{server: any, prevPackageJson: string}> {
+): Promise<{server: any, dependencyState: string}> {
   let server = serverRef;
-  let prevPackageJson = prevPackageJsonRef;
+  let dependencyState = dependencyStateRef;
   const sha = commits[i];
 
   // Skip undefined or empty SHA values
   if (!sha) {
     log(`Skipping undefined commit at index ${i}`);
-    return {server, prevPackageJson};
+    return {server, dependencyState};
   }
 
   log(`Processing commit ${i+1}/${commits.length}: ${sha.substring(0, 8)}`);
@@ -477,12 +477,12 @@ async function processCommit(
     }
   }
 
-  // Check if package.json has changed from previous commit
-  const { packageJsonChanged, newPkgContent } = await checkPackageJsonChanges(prevPackageJson);
+  // Check if dependencies have changed from previous commit
+  const { dependenciesChanged, newDependencyState } = await checkPackageJsonChanges(dependencyState);
 
   // Update the reference for next comparison
-  if (packageJsonChanged && newPkgContent) {
-    prevPackageJson = newPkgContent;
+  if (dependenciesChanged && newDependencyState) {
+    dependencyState = newDependencyState;
 
     // Handle dependency installation if needed
     const packageManager = detectPackageManager(serveCmd);
@@ -491,7 +491,7 @@ async function processCommit(
   }
 
   // Server reuse logic - only restart if dependencies changed or no server is running
-  if (packageJsonChanged || !server) {
+  if (dependenciesChanged || !server) {
     // Stop existing server if running
     if (server) {
       await stopServer(server);
@@ -533,7 +533,7 @@ async function processCommit(
         pretty(`   No screenshot saved - Server start failed (check server configuration)`, "warning");
       }
 
-      return {server, prevPackageJson}; // Skip to next commit if server fails to start
+      return {server, dependencyState}; // Skip to next commit if server fails to start
     }
   } else {
     // Using existing server (reuse)
@@ -550,12 +550,12 @@ async function processCommit(
       // Navigation failed silently
       pretty(`⚠️ Commit ${i+1}/${commits.length}: ${sha.substring(0, 8)} - ${message}`, "warning");
       pretty(`   No screenshot saved - Navigation failed silently`, "warning");
-      return {server, prevPackageJson};
+      return {server, dependencyState};
     }
 
     // Check for HTTP error status codes
     if (!await isResponseSuccessful(page, response, i, commits.length, sha, message)) {
-      return {server, prevPackageJson};
+      return {server, dependencyState};
     }
 
     // Check for client-side error pages
@@ -563,14 +563,14 @@ async function processCommit(
       const errorMessage = await extractErrorMessage(page);
       pretty(`⚠️ Commit ${i+1}/${commits.length}: ${sha.substring(0, 8)} - ${message}`, "warning");
       pretty(`   No screenshot saved - ${errorMessage}`, "warning");
-      return {server, prevPackageJson};
+      return {server, dependencyState};
     }
 
     // Check for empty pages
     if (await isEmptyPage(page)) {
       pretty(`⚠️ Commit ${i+1}/${commits.length}: ${sha.substring(0, 8)} - ${message}`, "warning");
       pretty(`   No screenshot saved - Empty or loading page`, "warning");
-      return {server, prevPackageJson};
+      return {server, dependencyState};
     }
 
     // Wait additional time after page load if specified
@@ -585,7 +585,7 @@ async function processCommit(
     handleNavigationError(navError, i, commits.length, sha, message);
   }
 
-  return {server, prevPackageJson};
+  return {server, dependencyState};
 }
 
 /**
