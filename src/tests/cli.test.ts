@@ -81,12 +81,6 @@ describe("parseArgs", () => {
     expect(config.waitAfterMs).toBe(2000);
   });
 
-  test("parses wait time as alias for wait-before", () => {
-    const config = parseArgs(["--wait", "5000"]);
-
-    expect(config.waitBeforeMs).toBe(5000);
-  });
-
   test("throws on unknown argument", () => {
     expect(() => parseArgs(["--unknown"])).toThrow("Unknown argument: --unknown");
   });
@@ -127,7 +121,7 @@ describe("parseArgs error cases", () => {
     ["-o"], ["--out-dir"],
     ["-w"], ["--width"],
     ["-h"], ["--height"],
-    ["--wait"], ["--wait-before"], ["--wait-after"],
+    ["--wait-before"], ["--wait-after"],
     ["-r"], ["--route"],
     ["-p"], ["--port"],
     ["--branch"],

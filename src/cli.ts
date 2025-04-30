@@ -13,7 +13,6 @@ export interface CliConfig {
   fps: number;
 }
 
-/** Parse command-line arguments into configuration. */
 export function parseArgs(
   args: string[],
   cwd: string = process.cwd()
@@ -56,7 +55,6 @@ export function parseArgs(
         i++;
         height = parseInt(args[i] || "0", 10);
         break;
-      case "--wait":
       case "--wait-before":
         if (i + 1 >= args.length) {
           throw new Error(`Missing value for ${arg}`);
@@ -122,13 +120,8 @@ export interface Scripts {
   [key: string]: string;
 }
 
-/** Determine serve command from package.json scripts. */
 export function detectServeCommand(scripts: Scripts): string {
-  if (scripts.dev) {
-    return "bun run dev";
-  }
-  if (scripts.start) {
-    return "bun run start";
-  }
+  if (scripts.dev) return "bun run dev";
+  if (scripts.start) return "bun run start";
   throw new Error("No 'dev' or 'start' script found in package.json.");
 }

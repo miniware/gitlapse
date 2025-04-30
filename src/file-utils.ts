@@ -80,22 +80,22 @@ export function findLastProcessedFrame(
  * @returns Object with commit details, or undefined if commit not found
  */
 export function getLastCommitInfo(
-  commitIndex: number, 
+  commitIndex: number,
   commits: string[],
   deps: { execCommand: (...args: any[]) => any } = { execCommand: execSync }
 ): { sha: string; shortSha: string; message: string } | undefined {
   try {
     const { execCommand } = deps;
-    
+
     if (commitIndex < 0 || commitIndex >= commits.length) {
       return undefined;
     }
-    
+
     const sha = commits[commitIndex];
     if (!sha) {
       return undefined;
     }
-    
+
     const message = execCommand(`git show -s --format=%s ${sha}`).toString().trim();
     return {
       sha,

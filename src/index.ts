@@ -49,12 +49,11 @@ function showHelp() {
     --height <pixels>        Screenshot height (default: 720)
     --wait-before <ms>       Wait time before page load (default: 3000)
     --wait-after <ms>        Wait time after page load before screenshot (default: 0)
-    --wait <ms>              Alias for --wait-before (backward compatibility)
     -r, --route <path>       Route to capture (default: /)
     -p, --port <number>      Port to use for the dev server (default: 3000)
     --branch <n>             Only include commits from this branch (default: all)
     --max-commits <number>   Limit number of commits to process
-    --fps <number>           Frames per second in output video (default: 2)
+    --fps <number>           Frames per second in output video (default: 12)
 
   Features:
     - Automatic resume: If existing frames are found in the output directory,
@@ -66,7 +65,6 @@ function showHelp() {
 let originalBranch: string = "";
 
 async function main() {
-
   log("Starting gitlapse");
 
   // Show help if requested
