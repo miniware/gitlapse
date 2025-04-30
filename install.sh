@@ -15,7 +15,7 @@ cd "$SCRIPT_DIR"
 
 # Build the executable
 echo "Building gitlapse executable..."
-bun build index.ts --compile --outfile ./dist/gitlapse
+bun run build
 
 # Create bin directory in user home if it doesn't exist
 BIN_DIR="$HOME/.local/bin"

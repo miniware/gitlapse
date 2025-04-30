@@ -13,7 +13,8 @@ import {
   getCurrentBranch,
   setupSafetyExitHandler,
   gatherCommits,
-  restoreRepositoryState
+  restoreRepositoryState,
+  cleanGemfileLock
 } from "./git-utils";
 import {
   startServer,
@@ -63,6 +64,8 @@ function showHelp() {
 
 // Track original branch for safety (read-only)
 let originalBranch: string = "";
+// Track project type
+let projectType: "js" | "rails" | "hybrid" = "js";
 
 async function main() {
   log("Starting gitlapse");
@@ -85,14 +88,27 @@ async function main() {
   safetyCheck(outDir);
   log("Repository safety checks passed");
 
-  // Only support apps with package.json
-  log("Checking for package.json");
+  // Detect project type based on configuration files
+  log("Detecting project type...");
   const pkgPath = path.join(process.cwd(), "package.json");
-  if (!fs.existsSync(pkgPath)) {
-    console.error("No package.json found. This tool supports only JS apps with package.json.");
+  const gemfilePath = path.join(process.cwd(), "Gemfile");
+  const hasPackageJson = fs.existsSync(pkgPath);
+  const hasGemfile = fs.existsSync(gemfilePath);
+  
+  // Determine project type based on available files
+  if (hasGemfile && hasPackageJson) {
+    projectType = "hybrid";
+    log("Detected hybrid project (Rails + JS)");
+  } else if (hasGemfile) {
+    projectType = "rails";
+    log("Detected Rails project");
+  } else if (hasPackageJson) {
+    projectType = "js";
+    log("Detected JavaScript project");
+  } else {
+    console.error("No package.json or Gemfile found. This tool supports JS apps with package.json or Rails apps with Gemfile.");
     process.exit(1);
   }
-  log("Confirmed: package.json found");
 
   // Create output directory if it doesn't exist
   log(`Creating output directory if needed: ${outDir}`);
@@ -103,11 +119,29 @@ async function main() {
     log(`Output directory already exists: ${outDir}`);
   }
 
-  // Determine serve cmd from package.json
-  log("Reading package.json to determine serve command");
-  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-  const serveCmd = detectServeCommand(pkg.scripts || {});
-  log(`Detected serve command: ${serveCmd}`);
+  // Determine serve command based on project type
+  let serveCmd = "";
+  
+  switch (projectType) {
+    case "rails":
+      log("Using Rails server command");
+      serveCmd = "bundle exec rails server";
+      log(`Using Rails serve command: ${serveCmd}`);
+      break;
+      
+    case "js":
+    case "hybrid":
+      // For hybrid projects, prefer the JS server command
+      log("Reading package.json to determine serve command");
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+      serveCmd = detectServeCommand(pkg.scripts || {});
+      log(`Detected serve command: ${serveCmd}`);
+      break;
+      
+    default:
+      console.error("Unsupported project type");
+      process.exit(1);
+  }
 
   const url = `http://localhost:${port}`;
   const framesPattern = path.join(outDir, "frame_");
@@ -287,14 +321,55 @@ async function processCommits(
       const commitToCheckout = startIndex > 0 ? commits[startIndex] : commits[0];
 
       if (commitToCheckout) {
+        // Clean Gemfile.lock before checkout to prevent conflicts
+        cleanGemfileLock();
+        
         log(`Checking out initial commit: ${commitToCheckout.substring(0, 8)}`);
-        require('child_process').execSync(`git checkout ${commitToCheckout} --quiet`);
-        log("Initial commit checked out successfully");
+        try {
+          require('child_process').execSync(`git checkout ${commitToCheckout} --quiet`);
+          log("Initial commit checked out successfully");
+        } catch (checkoutError) {
+          // If checkout fails, try force checkout
+          log(`Initial checkout failed, attempting force checkout: ${checkoutError instanceof Error ? checkoutError.message : String(checkoutError)}`);
+          require('child_process').execSync(`git checkout -f ${commitToCheckout} --quiet`);
+          log("Initial commit force checked out successfully");
+        }
 
-        // Store original package.json content for comparison and restoration
-        const pkgPath = path.join(process.cwd(), "package.json");
-        const pkgContent = fs.readFileSync(pkgPath, "utf8");
-        prevPackageJson = pkgContent;
+        // Store project dependency information for comparison and restoration
+        switch (projectType) {
+          case "rails":
+            // For Rails projects, use Gemfile.lock timestamp as reference
+            const gemfileLockPath = path.join(process.cwd(), "Gemfile.lock");
+            if (fs.existsSync(gemfileLockPath)) {
+              const gemfileLockStats = fs.statSync(gemfileLockPath);
+              prevPackageJson = `rails:${gemfileLockStats.mtimeMs}`;
+            } else {
+              prevPackageJson = "rails:0";
+            }
+            break;
+            
+          case "js":
+            // For JS projects, use package.json
+            const jsPkgPath = path.join(process.cwd(), "package.json");
+            const pkgContent = fs.readFileSync(jsPkgPath, "utf8");
+            prevPackageJson = pkgContent;
+            break;
+            
+          case "hybrid":
+            // For hybrid projects, store both
+            const hybridPkgPath = path.join(process.cwd(), "package.json");
+            const hybridPkgContent = fs.readFileSync(hybridPkgPath, "utf8");
+            const hybridGemfileLockPath = path.join(process.cwd(), "Gemfile.lock");
+            let gemfileLockTime = "0";
+            
+            if (fs.existsSync(hybridGemfileLockPath)) {
+              const gemStats = fs.statSync(hybridGemfileLockPath);
+              gemfileLockTime = String(gemStats.mtimeMs);
+            }
+            
+            prevPackageJson = `hybrid:${gemfileLockTime}:${hybridPkgContent}`;
+            break;
+        }
 
         // Detect and install dependencies for this commit
         const packageManager = detectPackageManager(serveCmd);
@@ -387,9 +462,19 @@ async function processCommit(
   // Skip checkout for the first iteration if we're starting from the beginning
   // or if we've already checked out the correct commit during resumption
   if (!(i === 0 && startIndex === 0) && !(i === startIndex && startIndex > 0)) {
+    // Reset any changes to Gemfile.lock before checkout to prevent conflicts
+    cleanGemfileLock();
+    
     log(`Checking out commit: ${sha.substring(0, 8)}`);
-    require('child_process').execSync(`git checkout ${sha} --quiet`);
-    log("Checkout complete");
+    try {
+      require('child_process').execSync(`git checkout ${sha} --quiet`);
+      log("Checkout complete");
+    } catch (checkoutError) {
+      // If checkout fails, try force checkout with -f flag
+      log(`Checkout failed, attempting force checkout: ${checkoutError instanceof Error ? checkoutError.message : String(checkoutError)}`);
+      require('child_process').execSync(`git checkout -f ${sha} --quiet`);
+      log("Force checkout complete");
+    }
   }
 
   // Check if package.json has changed from previous commit

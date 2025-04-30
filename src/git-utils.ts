@@ -1,5 +1,7 @@
 import { execSync } from "child_process";
 import { log, pretty } from "./logger";
+import fs from "fs";
+import path from "path";
 
 /**
  * Check if we're in a git repo and the repo is in a safe state
@@ -49,6 +51,28 @@ export function checkForUncommittedChanges(): void {
     console.error("Please commit or stash your changes before running this tool.");
     console.error("This tool requires a clean working directory.");
     process.exit(1);
+  }
+}
+
+/**
+ * Forcibly clean any changes to Gemfile.lock before checkout
+ */
+export function cleanGemfileLock(): void {
+  const gemfileLockPath = path.join(process.cwd(), "Gemfile.lock");
+  if (fs.existsSync(gemfileLockPath)) {
+    try {
+      // Check if Gemfile.lock has changes
+      try {
+        execSync('git diff --quiet Gemfile.lock');
+      } catch {
+        // Gemfile.lock has changes, reset it
+        log("Resetting changes to Gemfile.lock before checkout");
+        execSync('git checkout -- Gemfile.lock');
+      }
+    } catch (error) {
+      // Log but don't fail the process
+      log(`Warning: Failed to reset Gemfile.lock: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 }
 

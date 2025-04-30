@@ -20,6 +20,18 @@ export function prepareServerCommand(serveCmd: string, port: number) {
   let modifiedCmd = cmd;
   let modifiedParts = [...parts];
 
+  // For Rails server command
+  if (serveCmd.includes('rails server')) {
+    log("Detected Rails server command");
+    
+    if (!serveCmd.includes('-p') && !serveCmd.includes('--port')) {
+      modifiedParts.push(`-p`);
+      modifiedParts.push(`${port}`);
+      log(`Added explicit port ${port} to Rails server command`);
+    }
+    return { cmd: modifiedCmd, args: modifiedParts };
+  }
+
   // For dev servers, add port flag if not present
   if (serveCmd.includes('dev') || serveCmd.includes('start') || serveCmd.includes('serve')) {
     log("Detected dev server command");
@@ -157,7 +169,12 @@ function createServerReadyDetector(server: any, waitMs: number, errorDetailsGett
           output.includes('listening') ||
           output.includes('started') ||
           output.includes('running') ||
-          output.includes('localhost')) {
+          output.includes('localhost') ||
+          // Rails-specific ready messages
+          output.includes('Listening on') ||
+          output.includes('Use Ctrl-C to stop') ||
+          output.includes('Puma starting') ||
+          output.includes('WEBrick::HTTPServer#start')) {
         isReady = true;
         resolve(true);
       }
