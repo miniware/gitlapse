@@ -8,16 +8,16 @@ import { log, pretty } from "./logger";
 import { getUserConfirmation } from "./user-interaction";
 import { checkResumeAndPrompt } from "./resume-utils";
 import { findCapturedFrames, generateTimeLapseVideo } from "./video-utils";
-import { 
-  safetyCheck, 
-  getCurrentBranch, 
-  setupSafetyExitHandler, 
+import {
+  safetyCheck,
+  getCurrentBranch,
+  setupSafetyExitHandler,
   gatherCommits,
-  restoreRepositoryState 
+  restoreRepositoryState
 } from "./git-utils";
-import { 
-  startServer, 
-  stopServer 
+import {
+  startServer,
+  stopServer
 } from "./server-utils";
 import {
   navigateWithRetry,
@@ -38,16 +38,18 @@ import {
 // Show help information
 function showHelp() {
   console.log(`
-  git-lapse - Create timelapse videos of your web project's development
+  gitlapse - Create timelapse videos of your web project's development
 
-  Usage: git-lapse [options]
+  Usage: gitlapse [options]
 
   Options:
     -h, --help               Show this help message
     -o, --out-dir <dir>      Output directory for frames and video (default: ./timelapse)
     -w, --width <pixels>     Screenshot width (default: 1440)
     --height <pixels>        Screenshot height (default: 720)
-    --wait <milliseconds>    Wait time after starting server (default: 3000)
+    --wait-before <ms>       Wait time before page load (default: 3000)
+    --wait-after <ms>        Wait time after page load before screenshot (default: 0)
+    --wait <ms>              Alias for --wait-before (backward compatibility)
     -r, --route <path>       Route to capture (default: /)
     -p, --port <number>      Port to use for the dev server (default: 3000)
     --branch <n>             Only include commits from this branch (default: all)
@@ -65,7 +67,7 @@ let originalBranch: string = "";
 
 async function main() {
 
-  log("Starting git-lapse");
+  log("Starting gitlapse");
 
   // Show help if requested
   if (process.argv.includes('--help') || process.argv.includes('-h')) {
@@ -78,8 +80,8 @@ async function main() {
   log("Parsing command line arguments");
   const args = process.argv.slice(2);
   const config = parseArgs(args);
-  const { outDir, width, height, waitMs, route, port } = config;
-  log(`Config: outDir=${outDir}, width=${width}, height=${height}, waitMs=${waitMs}, route=${route}, port=${port}`);
+  const { outDir, width, height, waitBeforeMs, waitAfterMs, route, port } = config;
+  log(`Config: outDir=${outDir}, width=${width}, height=${height}, waitBeforeMs=${waitBeforeMs}, waitAfterMs=${waitAfterMs}, route=${route}, port=${port}`);
 
   // Run safety checks
   safetyCheck(outDir);
@@ -116,7 +118,7 @@ async function main() {
 
   // Gather commits
   const commits = gatherCommits(config.branch, config.maxCommits);
-  
+
   if (commits.length === 0) {
     console.error("No commits found in repository history.");
     process.exit(1);
@@ -159,7 +161,7 @@ async function main() {
   setupSafetyExitHandler(originalBranch);
 
   // Process the commits
-  await processCommits(commits, startIndex, framesPattern, outDir, serveCmd, url, route, port, waitMs, width, height);
+  await processCommits(commits, startIndex, framesPattern, outDir, serveCmd, url, route, port, waitBeforeMs, waitAfterMs, width, height);
 
   // Build video from the captured frames
   const outputVideoPath = await generateTimeLapseVideo(outDir, framesPattern, width, height, config.fps);
@@ -263,7 +265,8 @@ async function processCommits(
   url: string,
   route: string,
   port: number,
-  waitMs: number,
+  waitBeforeMs: number,
+  waitAfterMs: number,
   width: number,
   height: number
 ): Promise<void> {
@@ -315,8 +318,8 @@ async function processCommits(
       // Process each commit, starting from the resume point if applicable
       for (let i = startIndex; i < commits.length; i++) {
         const result = await processCommit(
-          i, commits, startIndex, prevPackageJson, serveCmd, 
-          server, url, route, waitMs, page, framesPattern
+          i, commits, startIndex, prevPackageJson, serveCmd,
+          server, url, route, waitBeforeMs, waitAfterMs, page, framesPattern
         );
         server = result.server;
         prevPackageJson = result.prevPackageJson;
@@ -344,15 +347,16 @@ async function processCommits(
  * Process a single commit
  */
 async function processCommit(
-  i: number, 
-  commits: string[], 
+  i: number,
+  commits: string[],
   startIndex: number,
   prevPackageJsonRef: string,
   serveCmd: string,
   serverRef: any,
   url: string,
   route: string,
-  waitMs: number,
+  waitBeforeMs: number,
+  waitAfterMs: number,
   page: any,
   framesPattern: string
 ): Promise<{server: any, prevPackageJson: string}> {
@@ -421,9 +425,9 @@ async function processCommit(
 
       try {
         server = await startServer({
-          serveCmd, 
+          serveCmd,
           port: url.includes(':') ? parseInt(url.split(':')[2] || '3000') : 3000,
-          waitMs
+          waitBeforeMs
         });
       } finally {
         // Restore original DEBUG setting
@@ -457,7 +461,7 @@ async function processCommit(
   log(`Preparing to take screenshot at route: ${route}`);
   try {
     // Attempt to navigate to the page and check for errors
-    const response = await navigateWithRetry(page, url + route, waitMs);
+    const response = await navigateWithRetry(page, url + route, waitBeforeMs);
 
     if (!response) {
       // Navigation failed silently
@@ -484,6 +488,12 @@ async function processCommit(
       pretty(`⚠️ Commit ${i+1}/${commits.length}: ${sha.substring(0, 8)} - ${message}`, "warning");
       pretty(`   No screenshot saved - Empty or loading page`, "warning");
       return {server, prevPackageJson};
+    }
+
+    // Wait additional time after page load if specified
+    if (waitAfterMs > 0) {
+      log(`Waiting ${waitAfterMs}ms after page load before taking screenshot`);
+      await new Promise(resolve => setTimeout(resolve, waitAfterMs));
     }
 
     // Save the screenshot

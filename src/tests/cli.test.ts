@@ -10,7 +10,8 @@ describe("parseArgs", () => {
     expect(config.outDir).toBe(path.join(cwd, "timelapse"));
     expect(config.width).toBe(1440);
     expect(config.height).toBe(720);
-    expect(config.waitMs).toBe(3000);
+    expect(config.waitBeforeMs).toBe(3000);
+    expect(config.waitAfterMs).toBe(0);
     expect(config.route).toBe("/");
     expect(config.port).toBe(3000);
     expect(config.branch).toBeUndefined();
@@ -68,10 +69,22 @@ describe("parseArgs", () => {
     expect(config.fps).toBe(30);
   });
 
-  test("parses wait time", () => {
+  test("parses wait-before time", () => {
+    const config = parseArgs(["--wait-before", "5000"]);
+
+    expect(config.waitBeforeMs).toBe(5000);
+  });
+
+  test("parses wait-after time", () => {
+    const config = parseArgs(["--wait-after", "2000"]);
+
+    expect(config.waitAfterMs).toBe(2000);
+  });
+
+  test("parses wait time as alias for wait-before", () => {
     const config = parseArgs(["--wait", "5000"]);
 
-    expect(config.waitMs).toBe(5000);
+    expect(config.waitBeforeMs).toBe(5000);
   });
 
   test("throws on unknown argument", () => {
@@ -114,7 +127,7 @@ describe("parseArgs error cases", () => {
     ["-o"], ["--out-dir"],
     ["-w"], ["--width"],
     ["-h"], ["--height"],
-    ["--wait"],
+    ["--wait"], ["--wait-before"], ["--wait-after"],
     ["-r"], ["--route"],
     ["-p"], ["--port"],
     ["--branch"],

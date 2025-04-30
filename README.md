@@ -1,25 +1,27 @@
-# git-lapse
+# gitlapse
 
-Create timelapse videos of your web project's development by taking screenshots at each git commit.
+Create timelapse videos of your web project's development.
 
 ## Installation
 
 ```bash
 # Clone and install
-git clone https://github.com/your-username/git-lapse.git
-cd git-lapse
+git clone https://github.com/miniware/gitlapse.git
+cd gitlapse
 bun install
 
 # Optional: install globally
-bun link
+bun run build
+chmod +x install.sh
+./install.sh
 ```
 
 ## Usage
 
-Run git-lapse from the root directory of a JavaScript web project:
+Run gitlapse from the root directory of a JavaScript web project:
 
 ```bash
-git-lapse [options]
+gitlapse [options]
 ```
 
 Or without global installation:
@@ -51,11 +53,11 @@ bun start [options]
 
 ### Resume Feature
 
-If the process is interrupted, git-lapse can resume from where it left off:
+If the process is interrupted, gitlapse can resume from where it left off:
 
-- When you run git-lapse and it finds existing frames in the output directory, 
+- When you run gitlapse and it finds existing frames in the output directory,
   you'll be prompted to resume from the last processed commit or start over
-- This is useful for long projects where the process might be interrupted, 
+- This is useful for long projects where the process might be interrupted,
   or when you encounter errors and need to fix them before continuing
 
 ## Requirements

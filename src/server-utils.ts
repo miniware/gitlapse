@@ -4,7 +4,7 @@ import { log, pretty } from "./logger";
 interface ServerOptions {
   serveCmd: string;
   port: number;
-  waitMs: number;
+  waitBeforeMs: number;
 }
 
 /**
@@ -43,7 +43,7 @@ export function prepareServerCommand(serveCmd: string, port: number) {
 /**
  * Start the development server
  */
-export async function startServer({ serveCmd, port, waitMs }: ServerOptions): Promise<any> {
+export async function startServer({ serveCmd, port, waitBeforeMs }: ServerOptions): Promise<any> {
   log("Preparing to start server");
 
   // Parse the serve command
@@ -67,10 +67,10 @@ export async function startServer({ serveCmd, port, waitMs }: ServerOptions): Pr
 
     // Create promises for server status detection
     const earlyExitPromise = createEarlyExitDetector(server, getErrorDetails);
-    const serverReadyPromise = createServerReadyDetector(server, waitMs, getErrorDetails);
+    const serverReadyPromise = createServerReadyDetector(server, waitBeforeMs, getErrorDetails);
 
     // Wait for server to start up or fail
-    log(`Waiting ${waitMs}ms for server to start`);
+    log(`Waiting ${waitBeforeMs}ms for server to start`);
 
     // Wait for the server to be ready or fail early
     const result = await Promise.race([serverReadyPromise, earlyExitPromise]);

@@ -14,17 +14,17 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
 # Build the executable
-echo "Building git-lapse executable..."
-bun build index.ts --compile --outfile ./dist/git-lapse
+echo "Building gitlapse executable..."
+bun build index.ts --compile --outfile ./dist/gitlapse
 
 # Create bin directory in user home if it doesn't exist
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
 
 # Create symlink
-SYMLINK_PATH="$BIN_DIR/git-lapse"
+SYMLINK_PATH="$BIN_DIR/gitlapse"
 echo "Creating symlink at $SYMLINK_PATH..."
-ln -sf "$SCRIPT_DIR/dist/git-lapse" "$SYMLINK_PATH"
+ln -sf "$SCRIPT_DIR/dist/gitlapse" "$SYMLINK_PATH"
 
 # Check if .local/bin is in PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
@@ -45,5 +45,5 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     fi
 fi
 
-echo "Installation complete! You can now use git-lapse command from anywhere."
-echo "Tip: If git-lapse command is not found, restart your terminal or run: source $SHELL_CONFIG"
+echo "Installation complete! You can now use gitlapse command from anywhere."
+echo "Tip: If gitlapse command is not found, restart your terminal or run: source $SHELL_CONFIG"

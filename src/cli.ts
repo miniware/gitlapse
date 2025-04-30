@@ -4,7 +4,8 @@ export interface CliConfig {
   outDir: string;
   width: number;
   height: number;
-  waitMs: number;
+  waitBeforeMs: number;
+  waitAfterMs: number;
   route: string;
   port: number;
   branch?: string;
@@ -20,7 +21,8 @@ export function parseArgs(
   let outDir = path.join(cwd, 'timelapse');
   let width = 1440;
   let height = 720;
-  let waitMs = 3000;
+  let waitBeforeMs = 3000;
+  let waitAfterMs = 0;
   let route = "/";
   let port = 3000;
   let branch: string | undefined = undefined;
@@ -55,11 +57,19 @@ export function parseArgs(
         height = parseInt(args[i] || "0", 10);
         break;
       case "--wait":
+      case "--wait-before":
         if (i + 1 >= args.length) {
           throw new Error(`Missing value for ${arg}`);
         }
         i++;
-        waitMs = parseInt(args[i] || "0", 10);
+        waitBeforeMs = parseInt(args[i] || "0", 10);
+        break;
+      case "--wait-after":
+        if (i + 1 >= args.length) {
+          throw new Error(`Missing value for ${arg}`);
+        }
+        i++;
+        waitAfterMs = parseInt(args[i] || "0", 10);
         break;
       case "-r":
       case "--route":
@@ -105,7 +115,7 @@ export function parseArgs(
     }
   }
 
-  return { outDir, width, height, waitMs, route, port, branch, maxCommits, fps };
+  return { outDir, width, height, waitBeforeMs, waitAfterMs, route, port, branch, maxCommits, fps };
 }
 
 export interface Scripts {
