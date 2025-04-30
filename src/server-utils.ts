@@ -1,5 +1,8 @@
 import { spawn } from "child_process";
 import { log, pretty } from "./logger";
+import { existsSync, unlinkSync } from "fs";
+import { join, resolve } from "path";
+import { execSync } from "child_process";
 
 interface ServerOptions {
   serveCmd: string;
@@ -21,14 +24,15 @@ export function prepareServerCommand(serveCmd: string, port: number) {
   let modifiedParts = [...parts];
 
   // For Rails server command
-  if (serveCmd.includes('rails server')) {
+  if (serveCmd.includes('rails server') || serveCmd.includes('rails s')) {
     log("Detected Rails server command");
     
-    if (!serveCmd.includes('-p') && !serveCmd.includes('--port')) {
-      modifiedParts.push(`-p`);
-      modifiedParts.push(`${port}`);
-      log(`Added explicit port ${port} to Rails server command`);
-    }
+    // Always add explicit port
+    modifiedParts = modifiedParts.filter(part => !part.startsWith('-p') && part !== '--port');
+    modifiedParts.push(`-p`);
+    modifiedParts.push(`${port}`);
+    log(`Added explicit port ${port} to Rails server command`);
+    
     return { cmd: modifiedCmd, args: modifiedParts };
   }
 
@@ -124,6 +128,9 @@ export async function stopServer(server: any): Promise<void> {
   }
 
   try {
+    // For Rails specifically, attempt to remove PID file first
+    await cleanupRailsPidFile();
+
     // Kill entire process group: first SIGTERM, then SIGKILL to ensure shutdown
     server.kill('SIGTERM');
     try {
@@ -265,4 +272,23 @@ function setupOutputHandlers(server: any) {
   }
 
   return () => errorDetails;
+}
+
+/**
+ * Cleans up Rails PID files to prevent "server already running" errors
+ */
+async function cleanupRailsPidFile(): Promise<void> {
+  try {
+    // Delete the main Rails PID file
+    const pidPath = "tmp/pids/server.pid";
+    const fullPath = resolve(process.cwd(), pidPath);
+    
+    if (existsSync(fullPath)) {
+      log(`Found Rails PID file at ${fullPath}, removing it`);
+      unlinkSync(fullPath);
+    }
+  } catch (error) {
+    log(`Warning: Error cleaning up Rails PID file: ${error instanceof Error ? error.message : String(error)}`);
+    // Non-fatal error - continue with server termination
+  }
 }
