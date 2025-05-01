@@ -11,6 +11,8 @@ export interface CliConfig {
   branch?: string;
   maxCommits?: number;
   fps: number;
+  density: number;
+  fullscreen: boolean;
 }
 
 export function parseArgs(
@@ -27,6 +29,8 @@ export function parseArgs(
   let branch: string | undefined = undefined;
   let maxCommits: number | undefined = undefined;
   let fps = 12;
+  let density = 2; // Default to high resolution (2x)
+  let fullscreen = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -107,13 +111,23 @@ export function parseArgs(
         i++;
         fps = parseInt(args[i] || "12", 10);
         break;
+      case "--density":
+        if (i + 1 >= args.length) {
+          throw new Error(`Missing value for ${arg}`);
+        }
+        i++;
+        density = parseFloat(args[i] || "2");
+        break;
+      case "--fullscreen":
+        fullscreen = true;
+        break;
       // Help is handled in index.ts
       default:``
         throw new Error(`Unknown argument: ${arg}`);
     }
   }
 
-  return { outDir, width, height, waitBeforeMs, waitAfterMs, route, port, branch, maxCommits, fps };
+  return { outDir, width, height, waitBeforeMs, waitAfterMs, route, port, branch, maxCommits, fps, density, fullscreen };
 }
 
 export interface Scripts {

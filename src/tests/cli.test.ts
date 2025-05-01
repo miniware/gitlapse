@@ -17,6 +17,8 @@ describe("parseArgs", () => {
     expect(config.branch).toBeUndefined();
     expect(config.maxCommits).toBeUndefined();
     expect(config.fps).toBe(12);
+    expect(config.density).toBe(2); // Default density is 2x (high resolution)
+    expect(config.fullscreen).toBe(false); // Default fullscreen is false
   });
 
   test("parses width and height", () => {
@@ -67,6 +69,18 @@ describe("parseArgs", () => {
     const config = parseArgs(["--fps", "30"]);
 
     expect(config.fps).toBe(30);
+  });
+  
+  test("parses density", () => {
+    const config = parseArgs(["--density", "3"]);
+
+    expect(config.density).toBe(3);
+  });
+  
+  test("enables fullscreen mode", () => {
+    const config = parseArgs(["--fullscreen"]);
+
+    expect(config.fullscreen).toBe(true);
   });
 
   test("parses wait-before time", () => {

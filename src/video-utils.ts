@@ -108,7 +108,9 @@ export async function generateTimeLapseVideo(
   framesPattern: string, 
   width: number, 
   height: number, 
-  fps: number
+  fps: number,
+  fullscreen?: boolean,
+  densityValue?: number
 ): Promise<string | undefined> {
   if (!framesPattern) {
     throw new Error("Frame pattern is required");
@@ -131,6 +133,47 @@ export async function generateTimeLapseVideo(
     log("Only one frame detected, will duplicate it to create a valid video");
     // Duplicate the frame to ensure we can create a video (needs at least 2 frames)
     uniqueFrames.push(uniqueFrames[0]);
+  }
+  
+  // If fullscreen, determine max height of all frames then adjust for density
+  let maxHeight = height;
+  // Use provided density parameter or default to 2
+  const densityFactor = (typeof densityValue === 'number' && densityValue > 0) ? densityValue : 2;
+  
+  if (fullscreen) {
+    try {
+      pretty("Fullscreen mode enabled, finding tallest frame...", "info");
+      for (const frame of uniqueFrames) {
+        if (!frame) continue;
+        
+        // Use ImageMagick to get dimensions
+        try {
+          const dimensions = execSync(`identify -format "%h" "${frame}"`).toString().trim();
+          const frameHeight = parseInt(dimensions, 10);
+          if (!isNaN(frameHeight) && frameHeight > maxHeight) {
+            maxHeight = frameHeight;
+            log(`New max height found: ${maxHeight}px from frame ${frame}`);
+          }
+        } catch (imgError) {
+          log(`Error getting dimensions from ${frame}: ${imgError}`);
+        }
+      }
+      
+      // Adjust height based on density (screenshot dimensions are multiplied by density)
+      const adjustedMaxHeight = Math.ceil(maxHeight / densityFactor);
+      pretty(`Adjusting max height from ${maxHeight}px to ${adjustedMaxHeight}px (accounting for density ${densityFactor})`, "info");
+      maxHeight = adjustedMaxHeight;
+      
+      // Ensure max height is at least the configured height
+      if (maxHeight < height) {
+        maxHeight = height;
+      }
+      
+      pretty(`Using max height of ${maxHeight}px for video output`, "info");
+    } catch (error) {
+      log(`Error determining max height, falling back to configured height: ${error}`);
+      maxHeight = height;
+    }
   }
 
   pretty(`Found ${uniqueFrames.length} unique frames, generating video...`, "info");
@@ -197,16 +240,19 @@ export async function generateTimeLapseVideo(
       const imgPattern = path.join(tmpDir, 'img_%06d.png');
       
       // Enhanced ffmpeg command for higher quality output:
-      // - No scaling unless needed (maintain original resolution)
-      // - Preserve exact colors from PNGs
-      // - Disable any automatic interpolation
-      // - Use a higher quality preset with a lower CRF for better quality
+      // - For fullscreen mode: Preserve aspect ratio exactly, align top  
+      // - For normal mode: Keep aspect ratio, center both vertically and horizontally
+      const vfFilter = fullscreen 
+        ? `scale=w=${width}:h=-1,pad=${width}:${maxHeight}:0:0:black` 
+        : `scale='min(${width},iw)':min(${height},ih):force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`;
+        
       const ffmpegCmd = `ffmpeg -y -loglevel error ${hwAccel} -framerate ${fps} -i "${imgPattern}" \
         -vframes ${sortedFrames.length} \
         -c:v libx264 -preset slow -tune stillimage -crf 15 \
-        -vf "scale='min(${width},iw)':min(${height},ih):force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2" \
+        -vf "${vfFilter}" \
         -sws_flags neighbor -pix_fmt yuv420p -color_primaries 1 -color_trc 1 -colorspace 1 \
         -movflags faststart -g 1 -bf 0 "${outputVideoPath}"`;
+      
       
       log(`Running FFmpeg command with high quality settings: ${ffmpegCmd}`);
       
@@ -229,7 +275,7 @@ export async function generateTimeLapseVideo(
             
             // Try fallback approach
             const fallbackResult = await tryFallbackVideoGeneration(
-              outDir, framesPattern, sortedFrames, fps, outputVideoPath
+              outDir, framesPattern, sortedFrames, fps, outputVideoPath, fullscreen, densityValue
             );
             resolve(fallbackResult);
           } else {
@@ -258,7 +304,7 @@ export async function generateTimeLapseVideo(
           
           // Try fallback approach
           const fallbackResult = await tryFallbackVideoGeneration(
-            outDir, framesPattern, sortedFrames, fps, outputVideoPath
+            outDir, framesPattern, sortedFrames, fps, outputVideoPath, fullscreen, densityValue
           );
           resolve(fallbackResult);
           
@@ -286,7 +332,7 @@ export async function generateTimeLapseVideo(
     pretty(ffmpegError instanceof Error ? ffmpegError.message : String(ffmpegError), "error");
 
     // Try fallback approach
-    return tryFallbackVideoGeneration(outDir, framesPattern, uniqueFrames, fps, outputVideoPath);
+    return tryFallbackVideoGeneration(outDir, framesPattern, uniqueFrames, fps, outputVideoPath, fullscreen, densityValue);
   }
 }
 
@@ -320,7 +366,9 @@ async function tryFallbackVideoGeneration(
   framesPattern: string,
   allFrames: string[],
   fps: number,
-  outputVideoPath: string
+  outputVideoPath: string,
+  fullscreen?: boolean,
+  densityValue?: number
 ): Promise<string | undefined> {
   try {
     log("Trying alternative approach with glob pattern...");
@@ -352,9 +400,54 @@ async function tryFallbackVideoGeneration(
       // Use a direct sequence pattern for more reliable frame ordering
       // Use a simpler command but still prioritize quality
       const imgPattern = path.join(tmpDir, 'img_%06d.png');
-      const simpleCmd = `ffmpeg -y -loglevel error -framerate ${fps} -i "${imgPattern}" \
+      
+      // Determine max height for fullscreen mode with adjustment for density
+      let maxHeight = 720; // Default height
+      const videoWidth = 1440; // Default width
+      // Use provided density parameter or default to 2
+      const densityFactor = (typeof densityValue === 'number' && densityValue > 0) ? densityValue : 2;
+      
+      if (fullscreen) {
+        try {
+          // First pass: find the tallest frame
+          for (const frame of allFrames) {
+            if (!frame) continue;
+            try {
+              const dimensions = execSync(`identify -format "%h" "${frame}"`).toString().trim();
+              const frameHeight = parseInt(dimensions, 10);
+              if (!isNaN(frameHeight) && frameHeight > maxHeight) {
+                maxHeight = frameHeight;
+                log(`Fallback: New max height found: ${maxHeight} from frame ${frame}`);
+              }
+            } catch (imgError) {
+              log(`Fallback: Error getting dimensions from ${frame}: ${imgError}`);
+            }
+          }
+          
+          // Adjust height based on density (screenshot dimensions are multiplied by density)
+          const adjustedMaxHeight = Math.ceil(maxHeight / densityFactor);
+          log(`Fallback: Adjusting max height from ${maxHeight}px to ${adjustedMaxHeight}px (accounting for density ${densityFactor})`);
+          maxHeight = adjustedMaxHeight;
+          
+          log(`Fallback: Using max height of ${maxHeight} pixels for video output`);
+        } catch (error) {
+          log(`Fallback: Error determining max height: ${error}`);
+        }
+      }
+      
+      // Set up video filter based on fullscreen mode - embed in command properly
+      // For fullscreen: Preserve aspect ratio exactly, align top
+      const vfFilter = fullscreen
+        ? `scale=w=${videoWidth}:h=-1,pad=${videoWidth}:${maxHeight}:0:0:black`
+        : `scale=${videoWidth}:720:force_original_aspect_ratio=decrease,pad=${videoWidth}:720:(ow-iw)/2:(oh-ih)/2:black`;
+      
+      // Simple command with error output enabled to help diagnose issues
+      const simpleCmd = `ffmpeg -y -framerate ${fps} -i "${imgPattern}" \
         -vframes ${allFrames.length} -c:v libx264 -preset medium \
-        -crf 18 -sws_flags neighbor -pix_fmt yuv420p -g 1 -bf 0 "${outputVideoPath}"`;
+        -crf 23 -vf "${vfFilter}" -pix_fmt yuv420p "${outputVideoPath}"`;
+      
+      log(`Using adjusted filter for compatibility: ${vfFilter}`);
+      
       
       log(`Running fallback FFmpeg command with medium preset: ${simpleCmd}`);
       execSync(simpleCmd, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -374,8 +467,61 @@ async function tryFallbackVideoGeneration(
     }
   } catch (fallbackError) {
     log(`Fallback approach failed: ${fallbackError}`);
-    pretty("All video creation attempts failed. Please try manually using ffmpeg.", "error");
-    process.exit(1);
+    
+    // Try one very basic fallback before giving up completely
+    try {
+      log("Attempting final basic fallback...");
+      // Ultra basic fallback command - accounting for density
+      const defaultWidth = 1440;
+      let defaultMaxHeight = 720; // Default if we can't determine
+      const densityFactor = 2; // Default density for final fallback (no parameters access here)
+      
+      // Try to determine the actual max height by checking frames directly
+      try {
+        pretty("Finding tallest frame for final fallback...", "info");
+        // Use find command to get frame paths
+        const frames = execSync(`find "${outDir}" -name "frame_*.png"`, { encoding: 'utf8' }).split('\n').filter(Boolean);
+        
+        // Find tallest frame height
+        for (const frame of frames) {
+          if (!frame) continue;
+          try {
+            const dimensions = execSync(`identify -format "%h" "${frame}"`, { encoding: 'utf8' }).trim();
+            const frameHeight = parseInt(dimensions, 10);
+            if (!isNaN(frameHeight) && frameHeight > defaultMaxHeight) {
+              defaultMaxHeight = frameHeight;
+              log(`Final fallback: Found taller frame: ${defaultMaxHeight}px (${frame})`);
+            }
+          } catch (imgError) {
+            // Ignore errors and continue with next frame
+          }
+        }
+        
+        // Adjust for density
+        const adjustedHeight = Math.ceil(defaultMaxHeight / densityFactor);
+        pretty(`Final fallback adjusting max height from ${defaultMaxHeight}px to ${adjustedHeight}px (accounting for density ${densityFactor})`, "info");
+        defaultMaxHeight = adjustedHeight;
+      } catch (error) {
+        log(`Error determining max height for final fallback: ${error}`);
+      }
+      const vf = fullscreen ? 
+        `-vf "scale=w=${defaultWidth}:h=-1,pad=${defaultWidth}:${defaultMaxHeight}:0:0:black"` : 
+        '';
+      const basicCmd = `ffmpeg -y -pattern_type glob -framerate ${fps} -i "${outDir}/frame_*.png" -c:v libx264 -preset ultrafast ${vf} -pix_fmt yuv420p "${outputVideoPath}"`;
+      log(`Running basic fallback command: ${basicCmd}`);
+      execSync(basicCmd, { stdio: 'inherit' });
+      
+      if (fs.existsSync(outputVideoPath)) {
+        pretty("✅ Video creation successful with basic fallback method!", "success");
+        return outputVideoPath;
+      }
+    } catch (finalError) {
+      log(`Final fallback also failed: ${finalError}`);
+      pretty("All video creation attempts failed. Please try manually using ffmpeg.", "error");
+    }
+    
+    // Don't exit the process, allow for graceful handling
+    return undefined;
   }
 
   return undefined;

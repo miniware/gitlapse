@@ -5,6 +5,7 @@ import path from "path";
 import puppeteer from "puppeteer";
 import { parseArgs, detectServeCommand } from "./cli";
 import { log, pretty } from "./logger";
+import { execSync } from "child_process";
 import { getUserConfirmation } from "./user-interaction";
 import { checkResumeAndPrompt } from "./resume-utils";
 import { findCapturedFrames, generateTimeLapseVideo } from "./video-utils";
@@ -55,6 +56,8 @@ function showHelp() {
     --branch <n>             Only include commits from this branch (default: all)
     --max-commits <number>   Limit number of commits to process
     --fps <number>           Frames per second in output video (default: 12)
+    --density <number>       Screenshot pixel density (default: 2)
+    --fullscreen             Capture full page height in screenshots
 
   Features:
     - Automatic resume: If existing frames are found in the output directory,
@@ -81,8 +84,8 @@ async function main() {
   log("Parsing command line arguments");
   const args = process.argv.slice(2);
   const config = parseArgs(args);
-  const { outDir, width, height, waitBeforeMs, waitAfterMs, route, port } = config;
-  log(`Config: outDir=${outDir}, width=${width}, height=${height}, waitBeforeMs=${waitBeforeMs}, waitAfterMs=${waitAfterMs}, route=${route}, port=${port}`);
+  const { outDir, width, height, waitBeforeMs, waitAfterMs, route, port, density, fullscreen } = config;
+  log(`Config: outDir=${outDir}, width=${width}, height=${height}, waitBeforeMs=${waitBeforeMs}, waitAfterMs=${waitAfterMs}, route=${route}, port=${port}, density=${density}, fullscreen=${fullscreen}`);
 
   // Run safety checks
   safetyCheck(outDir);
@@ -94,7 +97,7 @@ async function main() {
   const gemfilePath = path.join(process.cwd(), "Gemfile");
   const hasPackageJson = fs.existsSync(pkgPath);
   const hasGemfile = fs.existsSync(gemfilePath);
-  
+
   // Determine project type based on available files
   if (hasGemfile && hasPackageJson) {
     projectType = "hybrid";
@@ -121,14 +124,14 @@ async function main() {
 
   // Determine serve command based on project type
   let serveCmd = "";
-  
+
   switch (projectType) {
     case "rails":
       log("Using Rails server command");
       serveCmd = "bundle exec rails server";
       log(`Using Rails serve command: ${serveCmd}`);
       break;
-      
+
     case "js":
     case "hybrid":
       // For hybrid projects, prefer the JS server command
@@ -137,7 +140,7 @@ async function main() {
       serveCmd = detectServeCommand(pkg.scripts || {});
       log(`Detected serve command: ${serveCmd}`);
       break;
-      
+
     default:
       console.error("Unsupported project type");
       process.exit(1);
@@ -174,7 +177,7 @@ async function main() {
 
   // If startIndexResult is -1, all commits have already been processed
   if (startIndexResult === -1) {
-    await handleAllCommitsProcessed(outDir, framesPattern, width, height, config.fps);
+    await handleAllCommitsProcessed(outDir, framesPattern, width, height, config.fps, fullscreen);
     return;
   }
 
@@ -193,10 +196,10 @@ async function main() {
   setupSafetyExitHandler(originalBranch);
 
   // Process the commits
-  await processCommits(commits, startIndex, framesPattern, outDir, serveCmd, url, route, port, waitBeforeMs, waitAfterMs, width, height);
+  await processCommits(commits, startIndex, framesPattern, outDir, serveCmd, url, route, port, waitBeforeMs, waitAfterMs, width, height, density, fullscreen);
 
   // Build video from the captured frames
-  const outputVideoPath = await generateTimeLapseVideo(outDir, framesPattern, width, height, config.fps);
+  const outputVideoPath = await generateTimeLapseVideo(outDir, framesPattern, width, height, config.fps, fullscreen, config.density);
 
   // Restore original dependencies
   await cleanupEnvironment();
@@ -204,17 +207,29 @@ async function main() {
   // Report the number of frames
   reportProcessedFrames(outDir, framesPattern, commits.length);
 
-  // Pretty completion message with ANSI colors
-  console.log('\x1b[32m%s\x1b[0m', `✅ Done! Video saved at: ${outputVideoPath}`);
+  if (outputVideoPath) {
+    // Pretty completion message with ANSI colors
+    console.log('\x1b[32m%s\x1b[0m', `✅ Done! Video saved at: ${outputVideoPath}`);
 
-  // Show cleanup instructions
-  console.log('\n\x1b[36mTo clean up all generated files:\x1b[0m');
-  console.log(`  rm -rf ${outDir}`);
+    // Open the video in Finder (macOS only)
+    try {
+      console.log('\x1b[36mOpening video in Finder...\x1b[0m');
+      execSync(`open -R "${outputVideoPath}"`);
+    } catch (error) {
+      console.log('\x1b[33mCould not open video in Finder automatically.\x1b[0m');
+    }
 
-  // Show relative path for easier reference
-  const relativeOutDir = path.relative(process.cwd(), outDir);
-  if (relativeOutDir !== outDir) {
-    console.log(`  or: rm -rf ${relativeOutDir}`);
+    // Show cleanup instructions
+    console.log('\n\x1b[36mTo clean up all generated files:\x1b[0m');
+    console.log(`  rm -rf ${outDir}`);
+
+    // Show relative path for easier reference
+    const relativeOutDir = path.relative(process.cwd(), outDir);
+    if (relativeOutDir !== outDir) {
+      console.log(`  or: rm -rf ${relativeOutDir}`);
+    }
+  } else {
+    console.log('\x1b[31m%s\x1b[0m', '❌ Failed to generate video.');
   }
 }
 
@@ -226,7 +241,8 @@ async function handleAllCommitsProcessed(
   framesPattern: string,
   width: number,
   height: number,
-  fps: number
+  fps: number,
+  fullscreen?: boolean
 ): Promise<void> {
   // Check if there's already a video file in the output directory
   const existingVideos = fs.readdirSync(outDir)
@@ -235,9 +251,17 @@ async function handleAllCommitsProcessed(
   if (existingVideos.length === 0) {
     // No video exists yet, so generate one from the existing frames
     pretty("No timelapse video found. Generating one from existing frames...", "info");
-    const outputVideoPath = await generateTimeLapseVideo(outDir, framesPattern, width, height, fps);
+    const outputVideoPath = await generateTimeLapseVideo(outDir, framesPattern, width, height, fps, true, 2);
     if (outputVideoPath) {
       pretty(`✅ Done! Video saved at: ${outputVideoPath}`, "success");
+      
+      // Open the video in Finder (macOS only)
+      try {
+        pretty("Opening video in Finder...", "info");
+        execSync(`open -R "${outputVideoPath}"`);
+      } catch (error) {
+        log(`Could not open video in Finder: ${error}`);
+      }
     }
   } else {
     // Video already exists
@@ -246,9 +270,17 @@ async function handleAllCommitsProcessed(
     // Ask if user wants to generate a new video anyway
     const generateNewVideo = await getUserConfirmation("Generate a new video from existing frames?");
     if (generateNewVideo) {
-      const outputVideoPath = await generateTimeLapseVideo(outDir, framesPattern, width, height, fps);
+      const outputVideoPath = await generateTimeLapseVideo(outDir, framesPattern, width, height, fps, true, 2);
       if (outputVideoPath) {
         pretty(`✅ Done! New video saved at: ${outputVideoPath}`, "success");
+        
+        // Open the video in Finder (macOS only)
+        try {
+          pretty("Opening video in Finder...", "info");
+          execSync(`open -R "${outputVideoPath}"`);
+        } catch (error) {
+          log(`Could not open video in Finder: ${error}`);
+        }
       }
     }
   }
@@ -300,7 +332,9 @@ async function processCommits(
   waitBeforeMs: number,
   waitAfterMs: number,
   width: number,
-  height: number
+  height: number,
+  density: number,
+  fullscreen: boolean
 ): Promise<void> {
   // Launch browser
   log("Launching puppeteer browser");
@@ -309,8 +343,12 @@ async function processCommits(
   log("Creating new page");
   const page = await browser.newPage();
   log("Setting viewport dimensions");
-  await page.setViewport({ width, height });
-  log(`Viewport set to ${width}x${height}`);
+  await page.setViewport({
+    width,
+    height,
+    deviceScaleFactor: density || 1  // Apply deviceScaleFactor based on density
+  });
+  log(`Viewport set to ${width}x${height} with deviceScaleFactor ${density || 1}`);
 
   try {
     // Initial checkout and setup
@@ -323,7 +361,7 @@ async function processCommits(
       if (commitToCheckout) {
         // Clean Gemfile.lock before checkout to prevent conflicts
         cleanGemfileLock();
-        
+
         log(`Checking out initial commit: ${commitToCheckout.substring(0, 8)}`);
         try {
           require('child_process').execSync(`git checkout ${commitToCheckout} --quiet`);
@@ -347,26 +385,26 @@ async function processCommits(
               dependencyState = "rails:0";
             }
             break;
-            
+
           case "js":
             // For JS projects, use package.json
             const jsPkgPath = path.join(process.cwd(), "package.json");
             const pkgContent = fs.readFileSync(jsPkgPath, "utf8");
             dependencyState = pkgContent;
             break;
-            
+
           case "hybrid":
             // For hybrid projects, store both
             const hybridPkgPath = path.join(process.cwd(), "package.json");
             const hybridPkgContent = fs.readFileSync(hybridPkgPath, "utf8");
             const hybridGemfileLockPath = path.join(process.cwd(), "Gemfile.lock");
             let gemfileLockTime = "0";
-            
+
             if (fs.existsSync(hybridGemfileLockPath)) {
               const gemStats = fs.statSync(hybridGemfileLockPath);
               gemfileLockTime = String(gemStats.mtimeMs);
             }
-            
+
             dependencyState = `hybrid:${gemfileLockTime}:${hybridPkgContent}`;
             break;
         }
@@ -392,7 +430,8 @@ async function processCommits(
       for (let i = startIndex; i < commits.length; i++) {
         const result = await processCommit(
           i, commits, startIndex, dependencyState, serveCmd,
-          server, url, route, waitBeforeMs, waitAfterMs, page, framesPattern
+          server, url, route, waitBeforeMs, waitAfterMs, page, framesPattern,
+          density, fullscreen
         );
         server = result.server;
         dependencyState = result.dependencyState;
@@ -431,7 +470,9 @@ async function processCommit(
   waitBeforeMs: number,
   waitAfterMs: number,
   page: any,
-  framesPattern: string
+  framesPattern: string,
+  density?: number,
+  fullscreen?: boolean
 ): Promise<{server: any, dependencyState: string}> {
   let server = serverRef;
   let dependencyState = dependencyStateRef;
@@ -464,7 +505,7 @@ async function processCommit(
   if (!(i === 0 && startIndex === 0) && !(i === startIndex && startIndex > 0)) {
     // Reset any changes to Gemfile.lock before checkout to prevent conflicts
     cleanGemfileLock();
-    
+
     log(`Checking out commit: ${sha.substring(0, 8)}`);
     try {
       require('child_process').execSync(`git checkout ${sha} --quiet`);
@@ -580,7 +621,7 @@ async function processCommit(
     }
 
     // Save the screenshot
-    await saveScreenshot(page, i, commits.length, message, framesPattern);
+    await saveScreenshot(page, i, commits.length, message, framesPattern, density, fullscreen);
   } catch (navError) {
     handleNavigationError(navError, i, commits.length, sha, message);
   }

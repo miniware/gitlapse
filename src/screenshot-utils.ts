@@ -274,7 +274,9 @@ export async function saveScreenshot(
   commitIndex: number, 
   totalCommits: number, 
   message: string, 
-  framesPattern: string
+  framesPattern: string,
+  density?: number,
+  fullscreen?: boolean
 ): Promise<void> {
   // Create filename from commit message
   const commitWords = message.split(' ');
@@ -282,7 +284,11 @@ export async function saveScreenshot(
   const frame = `${framesPattern}${String(commitIndex).padStart(3, "0")}_${truncatedMessage}.png`;
 
   log(`Saving screenshot to: ${frame}`);
-  await page.screenshot({ path: frame, fullPage: false });
+
+  await page.screenshot({ 
+    path: frame, 
+    fullPage: fullscreen === true
+  });
 
   // Verify the screenshot was created
   if (!fs.existsSync(frame)) {
