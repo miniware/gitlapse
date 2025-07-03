@@ -1,10 +1,5 @@
 import { expect, test, describe } from "bun:test";
-import { 
-  getCurrentBranch,
-  safetyCheck
-} from "../git-utils";
-import fs from "fs";
-import path from "path";
+import { getCurrentBranch, safetyCheck } from "../git-utils";
 
 describe("Git utilities core functionality", () => {
   // Simple test that verifies the function exists and returns a string
